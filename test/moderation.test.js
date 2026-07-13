@@ -166,4 +166,43 @@ describe('createModerator', () => {
       { notify: false },
     );
   });
+
+  it('deletes profane chat messages and notifies the sender by display name', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      dryRun: false,
+      notify: true,
+      warningText:
+        '{user}, ваше сообщение удалено: в чате запрещена ненормативная лексика.',
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 123,
+          name: 'Мария',
+          username: 'maria',
+          is_bot: false,
+        },
+        recipient: { chat_id: 456 },
+        body: { mid: 'mid-6', text: 'ну это пиздец' },
+      },
+    });
+
+    expect(result.action).toBe('deleted');
+    expect(result.userName).toBe('Мария');
+    expect(api.deleteMessage).toHaveBeenCalledWith('mid-6');
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      456,
+      'Мария, ваше сообщение удалено: в чате запрещена ненормативная лексика.',
+      { notify: false },
+    );
+    expect(api.sendMessageToUser).not.toHaveBeenCalled();
+  });
 });

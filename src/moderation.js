@@ -19,7 +19,10 @@ export function createModerator({
     const text = message?.body?.text;
     const messageId = message?.body?.mid;
     const chatId = message?.recipient?.chat_id;
+    const sender = message?.sender;
     const userId = message?.sender?.user_id;
+    const userName = getUserDisplayName(sender);
+    const username = sender?.username ? `@${sender.username}` : '';
 
     if (message?.sender?.is_bot) {
       return { action: 'ignored', reason: 'bot-message' };
@@ -67,6 +70,8 @@ export function createModerator({
         warningText,
         chatId,
         userId,
+        userName,
+        username,
         token: result.token,
         reason: result.reason,
         action: 'would-delete',
@@ -77,6 +82,8 @@ export function createModerator({
         messageId,
         chatId,
         userId,
+        userName,
+        username,
         reason: result.reason,
         token: result.token,
         noticeSent,
@@ -91,6 +98,8 @@ export function createModerator({
       warningText,
       chatId,
       userId,
+      userName,
+      username,
       token: result.token,
       reason: result.reason,
       action: 'deleted',
@@ -101,6 +110,8 @@ export function createModerator({
       messageId,
       chatId,
       userId,
+      userName,
+      username,
       reason: result.reason,
       token: result.token,
       noticeSent,
@@ -116,6 +127,8 @@ async function sendModerationNotice({
   warningText,
   chatId,
   userId,
+  userName,
+  username,
   token,
   reason,
   action,
@@ -124,7 +137,14 @@ async function sendModerationNotice({
     return false;
   }
 
-  const text = renderTemplate(warningText, { token, reason, action });
+  const text = renderTemplate(warningText, {
+    token,
+    reason,
+    action,
+    user: userName,
+    username,
+    userId,
+  });
   if (chatId) {
     await api.sendMessageToChat(chatId, text, { notify: false });
     return true;
@@ -142,7 +162,16 @@ function renderTemplate(template, values) {
   return template
     .replaceAll('{token}', values.token || '')
     .replaceAll('{reason}', values.reason || '')
-    .replaceAll('{action}', values.action || '');
+    .replaceAll('{action}', values.action || '')
+    .replaceAll('{user}', values.user || 'Участник')
+    .replaceAll('{username}', values.username || '')
+    .replaceAll('{userId}', values.userId ? String(values.userId) : '');
+}
+
+function getUserDisplayName(sender) {
+  if (sender?.name) return sender.name;
+  if (sender?.username) return `@${sender.username}`;
+  return 'Участник';
 }
 
 async function maybeHandleCommand({

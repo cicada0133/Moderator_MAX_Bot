@@ -79,7 +79,7 @@ async function processUpdates(updates) {
       const result = await moderator.handleUpdate(update);
       if (['deleted', 'would-delete'].includes(result.action)) {
         console.log(
-          `${result.action}: message=${result.messageId}; chat=${result.chatId ?? 'unknown'}; user=${result.userId ?? 'unknown'}; token=${result.token ?? 'unknown'}; reason=${result.reason}; notice=${result.noticeSent}`,
+          `${result.action}: message=${result.messageId}; chat=${result.chatId ?? 'unknown'}; user=${result.userId ?? 'unknown'}; name=${result.userName ?? 'unknown'}; token=${result.token ?? 'unknown'}; reason=${result.reason}; notice=${result.noticeSent}`,
         );
       } else if (result.action === 'command') {
         console.log(
