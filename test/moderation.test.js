@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createModerator } from '../src/moderation.js';
 
 describe('createModerator', () => {
-  it('answers in direct messages during dry run without deleting', async () => {
+  it('ignores profanity in direct messages', async () => {
     const api = {
       deleteMessage: vi.fn(),
       sendMessageToChat: vi.fn(),
@@ -25,15 +25,15 @@ describe('createModerator', () => {
       },
     });
 
-    expect(result.action).toBe('would-delete');
-    expect(result.noticeSent).toBe(true);
+    expect(result).toEqual({
+      action: 'ignored',
+      reason: 'private-non-admin',
+      messageId: 'mid-1',
+      userId: 123,
+    });
     expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessageToChat).not.toHaveBeenCalled();
-    expect(api.sendMessageToUser).toHaveBeenCalledWith(
-      123,
-      'Нашёл "пиздец", правило "dictionary", действие "would-delete"',
-      { notify: false },
-    );
+    expect(api.sendMessageToUser).not.toHaveBeenCalled();
   });
 
   it('ignores bot messages to avoid replying to itself', async () => {
@@ -92,6 +92,81 @@ describe('createModerator', () => {
       'Ваш MAX user_id: 123',
       { notify: false },
     );
+  });
+
+  it('silently ignores non-admin commands in direct messages except id', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminUserIds: [999],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-private-help', text: '/help' },
+      },
+    });
+
+    expect(result).toEqual({
+      action: 'command',
+      command: '/help',
+      messageId: 'mid-private-help',
+      chatId: null,
+      userId: 123,
+      noticeSent: false,
+    });
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessageToChat).not.toHaveBeenCalled();
+    expect(api.sendMessageToUser).not.toHaveBeenCalled();
+  });
+
+  it('ignores direct contacts from non-admin users', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminUserIds: [999],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: {
+          mid: 'mid-private-contact',
+          attachments: [
+            {
+              type: 'contact',
+              payload: {
+                max_info: {
+                  user_id: 456,
+                  name: 'Павел',
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      action: 'ignored',
+      reason: 'private-non-admin',
+      messageId: 'mid-private-contact',
+      userId: 123,
+    });
+    expect(api.sendMessageToUser).not.toHaveBeenCalled();
   });
 
   it('lets configured admins add custom bad words', async () => {
@@ -462,15 +537,15 @@ describe('createModerator', () => {
       update_type: 'message_created',
       message: {
         sender: { user_id: 123, is_bot: false },
-        recipient: { chat_id: null },
+        recipient: { chat_id: 456 },
         body: { mid: 'mid-5', text: 'это спамслово' },
       },
     });
 
     expect(result.action).toBe('would-delete');
     expect(result.reason).toBe('custom-word');
-    expect(api.sendMessageToUser).toHaveBeenCalledWith(
-      123,
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      456,
       'Нашёл "спамслово"',
       { notify: false },
     );

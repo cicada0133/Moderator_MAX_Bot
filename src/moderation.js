@@ -33,9 +33,42 @@ export function createModerator({
     const userId = message?.sender?.user_id;
     const userName = getUserDisplayName(sender);
     const username = sender?.username ? `@${sender.username}` : '';
+    const isDirectMessage = !chatId;
+    const senderIsAdmin = isAdmin(userId, adminUserIds, adminStore);
 
     if (message?.sender?.is_bot) {
       return { action: 'ignored', reason: 'bot-message' };
+    }
+
+    if (isDirectMessage && !senderIsAdmin) {
+      const commandResult = await maybeHandleCommand({
+        api,
+        text,
+        chatId,
+        userId,
+        dictionaryStore,
+        adminStore,
+        adminUserIds,
+        isDirectMessage,
+      });
+
+      if (commandResult.handled) {
+        return {
+          action: 'command',
+          command: commandResult.command,
+          messageId,
+          chatId,
+          userId,
+          noticeSent: commandResult.noticeSent,
+        };
+      }
+
+      return {
+        action: 'ignored',
+        reason: 'private-non-admin',
+        messageId,
+        userId,
+      };
     }
 
     const contactResult = await maybeHandleContactAdminCandidate({
@@ -69,6 +102,7 @@ export function createModerator({
       dictionaryStore,
       adminStore,
       adminUserIds,
+      isDirectMessage,
     });
     if (commandResult.handled) {
       return {
@@ -78,6 +112,15 @@ export function createModerator({
         chatId,
         userId,
         noticeSent: commandResult.noticeSent,
+      };
+    }
+
+    if (isDirectMessage) {
+      return {
+        action: 'ignored',
+        reason: 'private-message',
+        messageId,
+        userId,
       };
     }
 
@@ -310,7 +353,12 @@ async function maybeHandleCommand({
   dictionaryStore,
   adminStore,
   adminUserIds,
+  isDirectMessage = false,
 }) {
+  if (!text) {
+    return { handled: false };
+  }
+
   const trimmed = text.trim();
   if (!trimmed.startsWith('/')) {
     return { handled: false };
@@ -320,12 +368,46 @@ async function maybeHandleCommand({
   const command = rawCommand.toLowerCase().split('@')[0];
   const argument = args.join(' ').trim();
 
-  if (['/id', '/whoami'].includes(command)) {
+  if (command === '/id') {
     await sendReply({
       api,
       chatId,
       userId,
       text: `Ваш MAX user_id: ${userId ?? 'не удалось определить'}`,
+    });
+    return { handled: true, command, noticeSent: true };
+  }
+
+  const adminCommands = new Set([
+    '/help',
+    '/commands',
+    '/badwords',
+    '/banword',
+    '/addbad',
+    '/unbanword',
+    '/removebad',
+    '/allowword',
+    '/unallowword',
+    '/admins',
+    '/addadmin',
+    '/removeadmin',
+    '/deladmin',
+  ]);
+  if (!adminCommands.has(command)) {
+    return { handled: false };
+  }
+
+  if (!isAdmin(userId, adminUserIds, adminStore)) {
+    if (isDirectMessage) {
+      return { handled: true, command, noticeSent: false };
+    }
+
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text:
+        'Команда доступна только администратору бота. Напишите /id и добавьте этот user_id в BOT_ADMIN_IDS.',
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -347,35 +429,8 @@ async function maybeHandleCommand({
         '/addadmin user_id - добавить администратора бота',
         '/removeadmin user_id - удалить runtime-администратора',
         'Можно отправить контакт пользователя: бот покажет user_id и кнопки для админки.',
+        'В ЛС бот отвечает только администраторам. Для остальных доступна только /id.',
       ].join('\n'),
-    });
-    return { handled: true, command, noticeSent: true };
-  }
-
-  const adminCommands = new Set([
-    '/badwords',
-    '/banword',
-    '/addbad',
-    '/unbanword',
-    '/removebad',
-    '/allowword',
-    '/unallowword',
-    '/admins',
-    '/addadmin',
-    '/removeadmin',
-    '/deladmin',
-  ]);
-  if (!adminCommands.has(command)) {
-    return { handled: false };
-  }
-
-  if (!isAdmin(userId, adminUserIds, adminStore)) {
-    await sendReply({
-      api,
-      chatId,
-      userId,
-      text:
-        'Команда доступна только администратору бота. Напишите /id и добавьте этот user_id в BOT_ADMIN_IDS.',
     });
     return { handled: true, command, noticeSent: true };
   }
