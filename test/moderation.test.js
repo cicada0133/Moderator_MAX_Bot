@@ -240,7 +240,7 @@ describe('createModerator', () => {
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       'Администратор добавлен: 456',
-      { notify: false },
+      { notify: false, format: 'markdown' },
     );
   });
 
@@ -274,7 +274,7 @@ describe('createModerator', () => {
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       'Администратор 456 уже задан в BOT_ADMIN_IDS. Дополнительно добавлять его не нужно.',
-      { notify: false },
+      { notify: false, format: 'markdown' },
     );
   });
 
@@ -362,16 +362,16 @@ describe('createModerator', () => {
       123,
       [
         'Администраторы бота:',
-        '- Мария (@maria, 123)',
-        '- Павел Лебединский (456)',
+        '- [Мария](max://user/123) (@maria, 123)',
+        '- [Павел Лебединский](max://user/456) (456)',
         '',
         'Из .env:',
-        '- Мария (@maria, 123)',
+        '- [Мария](max://user/123) (@maria, 123)',
         '',
         'Добавлены командами:',
-        '- Павел Лебединский (456)',
+        '- [Павел Лебединский](max://user/456) (456)',
       ].join('\n'),
-      { notify: false },
+      { notify: false, format: 'markdown' },
     );
   });
 
@@ -423,8 +423,9 @@ describe('createModerator', () => {
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       expect.stringContaining('MAX user_id: 456'),
-      {
+      expect.objectContaining({
         notify: false,
+        format: 'markdown',
         attachments: [
           expect.objectContaining({
             type: 'inline_keyboard',
@@ -440,7 +441,7 @@ describe('createModerator', () => {
             }),
           }),
         ],
-      },
+      }),
     );
   });
 
@@ -516,7 +517,7 @@ describe('createModerator', () => {
     expect(adminStore.addAdmin).toHaveBeenCalledWith(456);
     expect(api.answerCallback).toHaveBeenCalledWith('callback-1', {
       notification: 'Администратор добавлен: 456',
-      message: { text: 'Администратор добавлен: 456' },
+      message: { text: 'Администратор добавлен: 456', format: 'markdown' },
     });
   });
 
@@ -580,7 +581,7 @@ describe('createModerator', () => {
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       456,
       'Администратор 123 задан в BOT_ADMIN_IDS. Его нельзя удалить командой, только через .env.',
-      { notify: false },
+      { notify: false, format: 'markdown' },
     );
   });
 

@@ -238,8 +238,8 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
     await answerCallback(
       api,
       callbackId,
-      formatAdminsMessage(adminUserIds, adminStore),
-      { updateMessage: true },
+      formatAdminsMessage(adminUserIds, adminStore, { links: true }),
+      { updateMessage: true, format: 'markdown' },
     );
     return {
       action: 'command',
@@ -275,8 +275,8 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
   await answerCallback(
     api,
     callbackId,
-    formatAdminCommandResult(result, adminStore),
-    { updateMessage: true },
+    formatAdminCommandResult(result, adminStore, { links: true }),
+    { updateMessage: true, format: 'markdown' },
   );
 
   return {
@@ -291,11 +291,13 @@ async function answerCallback(
   api,
   callbackId,
   text,
-  { updateMessage = false } = {},
+  { updateMessage = false, format } = {},
 ) {
   await api.answerCallback(callbackId, {
-    notification: text,
-    ...(updateMessage ? { message: { text } } : {}),
+    notification: stripMarkdownLinks(text),
+    ...(updateMessage
+      ? { message: { text, ...(format ? { format } : {}) } }
+      : {}),
   });
 }
 
@@ -465,7 +467,8 @@ async function maybeHandleCommand({
       api,
       chatId,
       userId,
-      text: formatAdminsMessage(adminUserIds, adminStore),
+      text: formatAdminsMessage(adminUserIds, adminStore, { links: true }),
+      extra: { format: 'markdown' },
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -496,7 +499,8 @@ async function maybeHandleCommand({
       api,
       chatId,
       userId,
-      text: formatAdminCommandResult(result, adminStore),
+      text: formatAdminCommandResult(result, adminStore, { links: true }),
+      extra: { format: 'markdown' },
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -608,8 +612,9 @@ async function maybeHandleContactAdminCandidate({
     api,
     chatId,
     userId,
-    text: formatContactAdminMessage(contact),
+    text: formatContactAdminMessage(contact, { links: true }),
     extra: {
+      format: 'markdown',
       attachments: [buildAdminContactKeyboard(contact.userId)],
     },
   });
@@ -751,9 +756,13 @@ function extractVcfFullName(vcfInfo) {
   return match?.[1]?.trim() || '';
 }
 
-function formatContactAdminMessage(contact) {
+function formatContactAdminMessage(contact, { links = false } = {}) {
+  const contactLabel = formatKnownUser(contact.userId, {
+    [String(contact.userId)]: contact,
+  }, { links });
+
   return [
-    `Получен контакт${contact.name ? `: ${contact.name}` : ''}.`,
+    `Получен контакт: ${contactLabel}.`,
     `MAX user_id: ${contact.userId}`,
     'Что сделать с этим пользователем?',
   ].join('\n');
@@ -790,8 +799,8 @@ function buildAdminContactKeyboard(userId) {
   };
 }
 
-function formatAdminCommandResult(result, adminStore) {
-  const userLabel = formatKnownUserId(result.userId, adminStore);
+function formatAdminCommandResult(result, adminStore, { links = false } = {}) {
+  const userLabel = formatKnownUserId(result.userId, adminStore, { links });
 
   if (result.reason === 'invalid-user-id') {
     return 'Не удалось разобрать user_id. Нужен числовой MAX user_id.';
@@ -820,7 +829,7 @@ function formatAdminCommandResult(result, adminStore) {
   return `Администратор удалён из runtime-списка: ${userLabel}`;
 }
 
-function formatAdminsMessage(baseAdminUserIds, adminStore) {
+function formatAdminsMessage(baseAdminUserIds, adminStore, { links = false } = {}) {
   const storedAdmins = adminStore?.list() || {};
   const runtimeAdminUserIds = storedAdmins.adminUserIds || [];
   const allAdminUserIds = [
@@ -828,44 +837,62 @@ function formatAdminsMessage(baseAdminUserIds, adminStore) {
   ].sort((left, right) => left - right);
 
   return [
-    `Администраторы бота:\n${formatAdminList(allAdminUserIds, storedAdmins.knownUsers)}`,
-    `Из .env:\n${formatAdminList(baseAdminUserIds, storedAdmins.knownUsers)}`,
-    `Добавлены командами:\n${formatAdminList(runtimeAdminUserIds, storedAdmins.knownUsers)}`,
+    `Администраторы бота:\n${formatAdminList(allAdminUserIds, storedAdmins.knownUsers, { links })}`,
+    `Из .env:\n${formatAdminList(baseAdminUserIds, storedAdmins.knownUsers, { links })}`,
+    `Добавлены командами:\n${formatAdminList(runtimeAdminUserIds, storedAdmins.knownUsers, { links })}`,
   ].join('\n\n');
 }
 
-function formatAdminList(ids, knownUsers = {}) {
+function formatAdminList(ids, knownUsers = {}, { links = false } = {}) {
   if (!ids?.length) return 'пусто';
-  return ids.map((id) => `- ${formatKnownUser(id, knownUsers)}`).join('\n');
+  return ids
+    .map((id) => `- ${formatKnownUser(id, knownUsers, { links })}`)
+    .join('\n');
 }
 
-function formatKnownUserId(userId, adminStore) {
-  return formatKnownUser(userId, adminStore?.list()?.knownUsers || {});
+function formatKnownUserId(userId, adminStore, { links = false } = {}) {
+  return formatKnownUser(userId, adminStore?.list()?.knownUsers || {}, {
+    links,
+  });
 }
 
-function formatKnownUser(userId, knownUsers = {}) {
+function formatKnownUser(userId, knownUsers = {}, { links = false } = {}) {
   const profile = knownUsers[String(userId)] || {};
   const name = getStoredProfileName(profile);
   const username = profile.username ? `@${profile.username}` : '';
+  const displayName = links ? formatUserMention(userId, name) : name;
 
-  if (name && username) {
-    return `${name} (${username}, ${userId})`;
+  if (displayName && username) {
+    return `${displayName} (${username}, ${userId})`;
   }
 
   if (username) {
     return `${username} (${userId})`;
   }
 
-  if (name) {
-    return `${name} (${userId})`;
+  if (displayName) {
+    return `${displayName} (${userId})`;
   }
 
   return String(userId);
 }
 
+function formatUserMention(userId, name) {
+  if (!name) return '';
+  return `[${escapeMarkdownLinkText(name)}](max://user/${userId})`;
+}
+
 function getStoredProfileName(profile = {}) {
   if (profile.name) return profile.name;
   return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
+}
+
+function escapeMarkdownLinkText(value) {
+  return String(value).replace(/[\\[\]()]/gu, '\\$&');
+}
+
+function stripMarkdownLinks(value) {
+  return String(value).replace(/\[([^\]]+)\]\(max:\/\/user\/\d+\)/gu, '$1');
 }
 
 function applyDictionaryCommand(dictionaryStore, command, argument) {
