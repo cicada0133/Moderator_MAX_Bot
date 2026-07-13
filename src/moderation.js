@@ -24,6 +24,7 @@ export function createModerator({
       return handleCallbackUpdate({
         api,
         update,
+        dictionaryStore,
         adminStore,
         sanctionStore,
         adminUserIds,
@@ -251,6 +252,7 @@ export function createModerator({
 async function handleCallbackUpdate({
   api,
   update,
+  dictionaryStore,
   adminStore,
   sanctionStore,
   adminUserIds,
@@ -290,7 +292,31 @@ async function handleCallbackUpdate({
     };
   }
 
+  if (parsedPayload.kind === 'panel') {
+    return handlePanelCallback({
+      api,
+      callbackId,
+      parsedPayload,
+      dictionaryStore,
+      adminStore,
+      sanctionStore,
+      adminUserIds,
+      userId,
+    });
+  }
+
   if (parsedPayload.kind === 'sanction') {
+    if (parsedPayload.action === 'unban') {
+      return handleSanctionUnbanCallback({
+        api,
+        callbackId,
+        parsedPayload,
+        sanctionStore,
+        adminStore,
+        userId,
+      });
+    }
+
     await answerCallback(
       api,
       callbackId,
@@ -310,7 +336,10 @@ async function handleCallbackUpdate({
       api,
       callbackId,
       formatAdminsMessage(adminUserIds, adminStore, { links: true }),
-      { updateMessage: true, format: 'markdown' },
+      withKeyboard(
+        { updateMessage: true, format: 'markdown' },
+        buildAdminsActionKeyboard(adminUserIds, adminStore),
+      ),
     );
     return {
       action: 'command',
@@ -342,12 +371,27 @@ async function handleCallbackUpdate({
     command,
     String(parsedPayload.userId),
   );
+  const resultText = formatAdminCommandResult(result, adminStore, {
+    links: true,
+  });
 
   await answerCallback(
     api,
     callbackId,
-    formatAdminCommandResult(result, adminStore, { links: true }),
-    { updateMessage: true, format: 'markdown' },
+    [
+      resultText,
+      '',
+      formatAdminsMessage(adminUserIds, adminStore, { links: true }),
+    ].join('\n'),
+    {
+      updateMessage: true,
+      format: 'markdown',
+      notification: resultText,
+      ...withKeyboard(
+        {},
+        buildAdminsActionKeyboard(adminUserIds, adminStore),
+      ),
+    },
   );
 
   return {
@@ -358,14 +402,117 @@ async function handleCallbackUpdate({
   };
 }
 
+async function handlePanelCallback({
+  api,
+  callbackId,
+  parsedPayload,
+  dictionaryStore,
+  adminStore,
+  sanctionStore,
+  adminUserIds,
+  userId,
+}) {
+  const action = parsedPayload.action;
+  let text = formatAdminPanelMessage();
+  let format;
+  let keyboard = buildAdminPanelKeyboard();
+
+  if (action === 'help') {
+    text = formatHelpMessage();
+  } else if (action === 'banhelp') {
+    text = formatBanHelpMessage();
+  } else if (action === 'badwords') {
+    text = dictionaryStore
+      ? formatDictionaryMessage(dictionaryStore.list())
+      : 'Пользовательский словарь не подключён.';
+  } else if (action === 'admins') {
+    text = formatAdminsMessage(adminUserIds, adminStore, { links: true });
+    format = 'markdown';
+    keyboard = buildAdminsActionKeyboard(adminUserIds, adminStore, {
+      includeBack: true,
+    });
+  } else if (action === 'bans') {
+    text =
+      'Список активных soft-ban привязан к группе. Откройте нужную группу и отправьте /bans.';
+  } else if (action === 'id') {
+    text = `Ваш MAX user_id: ${userId ?? 'не удалось определить'}`;
+  }
+
+  await answerCallback(api, callbackId, text, {
+    updateMessage: true,
+    format,
+    ...withKeyboard({}, keyboard),
+  });
+
+  return {
+    action: 'command',
+    command: `callback:panel:${action}`,
+    userId,
+    noticeSent: true,
+  };
+}
+
+async function handleSanctionUnbanCallback({
+  api,
+  callbackId,
+  parsedPayload,
+  sanctionStore,
+  adminStore,
+  userId,
+}) {
+  if (!sanctionStore) {
+    await answerCallback(api, callbackId, 'Хранилище санкций не подключено.');
+    return {
+      action: 'command',
+      command: 'callback:sanction:unban',
+      userId,
+      noticeSent: true,
+    };
+  }
+
+  const result = sanctionStore.liftBan({
+    chatId: parsedPayload.chatId,
+    userId: parsedPayload.userId,
+    moderatorUserId: userId,
+  });
+  const resultText = formatUnbanResult(result, adminStore, { links: true });
+  const bansText = formatBansMessage({
+    chatId: parsedPayload.chatId,
+    sanctionStore,
+    adminStore,
+    links: true,
+  });
+
+  await answerCallback(api, callbackId, [resultText, '', bansText].join('\n'), {
+    updateMessage: true,
+    format: 'markdown',
+    notification: resultText,
+    ...withKeyboard(
+      {},
+      buildBansActionKeyboard({
+        chatId: parsedPayload.chatId,
+        sanctionStore,
+        adminStore,
+      }),
+    ),
+  });
+
+  return {
+    action: 'command',
+    command: 'callback:sanction:unban',
+    userId,
+    noticeSent: true,
+  };
+}
+
 async function answerCallback(
   api,
   callbackId,
   text,
-  { updateMessage = false, format, attachments } = {},
+  { updateMessage = false, format, attachments, notification } = {},
 ) {
   await api.answerCallback(callbackId, {
-    notification: stripMarkdownLinks(text),
+    notification: stripMarkdownLinks(notification || text),
     ...(updateMessage
       ? {
           message: {
@@ -376,6 +523,10 @@ async function answerCallback(
         }
       : {}),
   });
+}
+
+function withKeyboard(options = {}, keyboard) {
+  return keyboard ? { ...options, attachments: [keyboard] } : options;
 }
 
 function rememberKnownUser(adminStore, profile) {
@@ -515,6 +666,8 @@ async function maybeHandleCommand({
   }
 
   const adminCommands = new Set([
+    '/start',
+    '/menu',
     '/help',
     '/commands',
     '/banhelp',
@@ -553,6 +706,21 @@ async function maybeHandleCommand({
     return { handled: true, command, noticeSent: true };
   }
 
+  if (['/start', '/menu'].includes(command)) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: isDirectMessage
+        ? formatAdminPanelMessage()
+        : 'Панель управления открывается в ЛС с ботом. Напишите боту /start.',
+      extra: isDirectMessage
+        ? { attachments: [buildAdminPanelKeyboard()] }
+        : {},
+    });
+    return { handled: true, command, noticeSent: true };
+  }
+
   if (['/help', '/commands'].includes(command)) {
     await sendReply({
       api,
@@ -579,7 +747,13 @@ async function maybeHandleCommand({
       chatId,
       userId,
       text: formatAdminsMessage(adminUserIds, adminStore, { links: true }),
-      extra: { format: 'markdown' },
+      extra: {
+        format: 'markdown',
+        ...withKeyboard(
+          {},
+          buildAdminsActionKeyboard(adminUserIds, adminStore),
+        ),
+      },
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -716,7 +890,13 @@ async function maybeHandleSanctionCommand({
         adminStore,
         links: true,
       }),
-      extra: { format: 'markdown' },
+      extra: {
+        format: 'markdown',
+        ...withKeyboard(
+          {},
+          buildBansActionKeyboard({ chatId, sanctionStore, adminStore }),
+        ),
+      },
     });
     return { noticeSent: true };
   }
@@ -940,6 +1120,16 @@ function applyAdminCommand(adminStore, baseAdminUserIds, command, argument) {
 }
 
 function parseCallbackPayload(payload) {
+  const panelMatch = String(payload || '').match(
+    /^panel:(menu|help|banhelp|badwords|admins|bans|id)$/u,
+  );
+  if (panelMatch) {
+    return {
+      kind: 'panel',
+      action: panelMatch[1],
+    };
+  }
+
   if (payload === 'admin:list') {
     return { kind: 'admin', action: 'list' };
   }
@@ -1114,6 +1304,105 @@ function buildContactActionKeyboard(userId) {
   };
 }
 
+function buildAdminPanelKeyboard() {
+  return {
+    type: 'inline_keyboard',
+    payload: {
+      buttons: [
+        [
+          {
+            type: 'callback',
+            text: 'Помощь',
+            payload: 'panel:help',
+          },
+          {
+            type: 'callback',
+            text: 'Soft-ban',
+            payload: 'panel:banhelp',
+          },
+        ],
+        [
+          {
+            type: 'callback',
+            text: 'Словарь',
+            payload: 'panel:badwords',
+          },
+          {
+            type: 'callback',
+            text: 'Админы',
+            payload: 'panel:admins',
+          },
+        ],
+        [
+          {
+            type: 'callback',
+            text: 'Баны',
+            payload: 'panel:bans',
+          },
+          {
+            type: 'callback',
+            text: 'Мой id',
+            payload: 'panel:id',
+          },
+        ],
+      ],
+    },
+  };
+}
+
+function buildAdminsActionKeyboard(baseAdminUserIds, adminStore, { includeBack = false } = {}) {
+  const storedAdmins = adminStore?.list() || {};
+  const runtimeAdminUserIds = (storedAdmins.adminUserIds || [])
+    .map((id) => Number(id))
+    .filter((id) => !baseAdminUserIds.includes(id));
+  const buttons = runtimeAdminUserIds.map((id) => [
+    {
+      type: 'callback',
+      text: `Убрать ${formatButtonUserLabel(id, adminStore)}`,
+      payload: `admin:remove:${id}`,
+    },
+  ]);
+
+  if (includeBack) {
+    buttons.push([
+      {
+        type: 'callback',
+        text: 'В меню',
+        payload: 'panel:menu',
+      },
+    ]);
+  }
+
+  if (!buttons.length) {
+    return null;
+  }
+
+  return {
+    type: 'inline_keyboard',
+    payload: { buttons },
+  };
+}
+
+function buildBansActionKeyboard({ chatId, sanctionStore, adminStore }) {
+  const activeBans = sanctionStore?.listActiveBans?.(chatId) || [];
+  if (!activeBans.length) {
+    return null;
+  }
+
+  return {
+    type: 'inline_keyboard',
+    payload: {
+      buttons: activeBans.map((ban) => [
+        {
+          type: 'callback',
+          text: `Снять ${formatButtonUserLabel(ban.userId, adminStore)}`,
+          payload: `sanction:unban:${chatId}:${ban.userId}`,
+        },
+      ]),
+    },
+  };
+}
+
 function formatAdminCommandResult(result, adminStore, { links = false } = {}) {
   const userLabel = formatKnownUserId(result.userId, adminStore, { links });
 
@@ -1169,9 +1458,18 @@ function formatHelpMessage() {
     'Через контакт',
     '  Отправьте контакт пользователя в нужную группу.',
     '  Бот покажет user_id и админ-кнопки.',
-    '  Баны — только командами.',
+    '  Бан ставится только командами.',
     '',
     'В ЛС бот отвечает только администраторам. Для остальных доступна только /id.',
+  ].join('\n');
+}
+
+function formatAdminPanelMessage() {
+  return [
+    'Панель администратора',
+    '',
+    'Кнопки здесь дублируют безопасные команды.',
+    'Soft-ban включается только вручную в группе: /ban, /unban, /bans.',
   ].join('\n');
 }
 
@@ -1315,6 +1613,11 @@ function formatKnownUser(userId, knownUsers = {}, { links = false } = {}) {
   }
 
   return String(userId);
+}
+
+function formatButtonUserLabel(userId, adminStore) {
+  const label = stripMarkdownLinks(formatKnownUserId(userId, adminStore));
+  return label.length > 48 ? `${label.slice(0, 45)}...` : label;
 }
 
 function formatUserMention(userId, name) {

@@ -242,6 +242,53 @@ describe('createModerator', () => {
     );
   });
 
+  it('shows admin control panel from start command', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-start', text: '/start' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('Панель администратора'),
+      expect.objectContaining({
+        notify: false,
+        attachments: [
+          expect.objectContaining({
+            type: 'inline_keyboard',
+            payload: expect.objectContaining({
+              buttons: expect.arrayContaining([
+                [
+                  expect.objectContaining({ payload: 'panel:help' }),
+                  expect.objectContaining({ payload: 'panel:banhelp' }),
+                ],
+                [
+                  expect.objectContaining({ payload: 'panel:badwords' }),
+                  expect.objectContaining({ payload: 'panel:admins' }),
+                ],
+              ]),
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
   it('shows separate soft-ban help for admins', async () => {
     const api = {
       deleteMessage: vi.fn(),
@@ -449,7 +496,25 @@ describe('createModerator', () => {
         'Добавлены командами:',
         '- [Павел Лебединский](max://user/456) (456)',
       ].join('\n'),
-      { notify: false, format: 'markdown' },
+      {
+        notify: false,
+        format: 'markdown',
+        attachments: [
+          expect.objectContaining({
+            type: 'inline_keyboard',
+            payload: expect.objectContaining({
+              buttons: [
+                [
+                  expect.objectContaining({
+                    text: 'Убрать Павел Лебединский (456)',
+                    payload: 'admin:remove:456',
+                  }),
+                ],
+              ],
+            }),
+          }),
+        ],
+      },
     );
   });
 
@@ -678,6 +743,71 @@ describe('createModerator', () => {
     expect(api.deleteMessage).toHaveBeenCalledWith('mid-soft-ban-1');
     expect(otherChatResult.action).toBe('allowed');
     expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows active bans with unban buttons', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({
+        adminUserIds: [],
+        knownUsers: {
+          456: { userId: 456, name: 'Павел' },
+        },
+      })),
+    };
+    const sanctionStore = {
+      listActiveBans: vi.fn(() => [
+        {
+          chatId: 777,
+          userId: 456,
+          expiresAt: '2026-07-13T12:30:00.000Z',
+        },
+      ]),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      sanctionStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: 777 },
+        body: { mid: 'mid-bans-list', text: '/bans' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      777,
+      expect.stringContaining('Активные soft-ban в этом чате:'),
+      expect.objectContaining({
+        notify: false,
+        format: 'markdown',
+        attachments: [
+          expect.objectContaining({
+            type: 'inline_keyboard',
+            payload: expect.objectContaining({
+              buttons: [
+                [
+                  expect.objectContaining({
+                    text: 'Снять Павел (456)',
+                    payload: 'sanction:unban:777:456',
+                  }),
+                ],
+              ],
+            }),
+          }),
+        ],
+      }),
+    );
   });
 
   it('does not apply soft-ban to admins but still moderates their profanity', async () => {
@@ -927,10 +1057,16 @@ describe('createModerator', () => {
 
     expect(result.action).toBe('command');
     expect(adminStore.addAdmin).toHaveBeenCalledWith(456);
-    expect(api.answerCallback).toHaveBeenCalledWith('callback-1', {
-      notification: 'Администратор добавлен: 456',
-      message: { text: 'Администратор добавлен: 456', format: 'markdown' },
-    });
+    expect(api.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      expect.objectContaining({
+        notification: 'Администратор добавлен: 456',
+        message: expect.objectContaining({
+          format: 'markdown',
+          text: expect.stringContaining('Администратор добавлен: 456'),
+        }),
+      }),
+    );
   });
 
   it('rejects old soft-ban menu callback buttons', async () => {
@@ -1022,6 +1158,63 @@ describe('createModerator', () => {
             'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
         },
       },
+    );
+  });
+
+  it('lets admins lift soft bans from bans list buttons', async () => {
+    const api = {
+      answerCallback: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({
+        adminUserIds: [],
+        knownUsers: {
+          456: { userId: 456, name: 'Павел' },
+        },
+      })),
+    };
+    const sanctionStore = {
+      liftBan: vi.fn(() => ({
+        changed: true,
+        ban: {
+          chatId: '777',
+          userId: 456,
+          expiresAt: '2026-07-13T12:30:00.000Z',
+        },
+      })),
+      listActiveBans: vi.fn(() => []),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      sanctionStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-unban-from-list',
+        payload: 'sanction:unban:777:456',
+        user: { user_id: 123 },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(sanctionStore.liftBan).toHaveBeenCalledWith({
+      chatId: '777',
+      userId: 456,
+      moderatorUserId: 123,
+    });
+    expect(api.answerCallback).toHaveBeenCalledWith(
+      'callback-unban-from-list',
+      expect.objectContaining({
+        notification: expect.stringContaining('Soft-ban снят'),
+        message: expect.objectContaining({
+          format: 'markdown',
+          text: expect.stringContaining('Активных soft-ban в этом чате нет.'),
+        }),
+      }),
     );
   });
 
