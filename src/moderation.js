@@ -12,6 +12,15 @@ export function createModerator({
   adminUserIds = [],
 }) {
   async function handleUpdate(update) {
+    if (update?.update_type === 'message_callback') {
+      return handleCallbackUpdate({
+        api,
+        update,
+        adminStore,
+        adminUserIds,
+      });
+    }
+
     if (update?.update_type !== 'message_created') {
       return { action: 'ignored', reason: 'unsupported-update' };
     }
@@ -27,6 +36,25 @@ export function createModerator({
 
     if (message?.sender?.is_bot) {
       return { action: 'ignored', reason: 'bot-message' };
+    }
+
+    const contactResult = await maybeHandleContactAdminCandidate({
+      api,
+      message,
+      chatId,
+      userId,
+      adminStore,
+      adminUserIds,
+    });
+    if (contactResult.handled) {
+      return {
+        action: 'command',
+        command: contactResult.command,
+        messageId,
+        chatId,
+        userId,
+        noticeSent: contactResult.noticeSent,
+      };
     }
 
     if (!text || !messageId) {
@@ -121,6 +149,83 @@ export function createModerator({
   }
 
   return { handleUpdate };
+}
+
+async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
+  const callback = update.callback;
+  const callbackId = callback?.callback_id;
+  const payload = callback?.payload;
+  const parsedPayload = parseAdminCallbackPayload(payload);
+  const userId = getCallbackUserId(update);
+
+  if (!parsedPayload) {
+    if (callbackId) {
+      await api.answerCallback(callbackId, {
+        notification: 'Кнопка устарела или не распознана.',
+      });
+    }
+    return { action: 'ignored', reason: 'unsupported-callback', userId };
+  }
+
+  if (!callbackId) {
+    return { action: 'ignored', reason: 'missing-callback-id', userId };
+  }
+
+  if (!isAdmin(userId, adminUserIds, adminStore)) {
+    await api.answerCallback(callbackId, {
+      notification: 'Эта кнопка доступна только администратору бота.',
+    });
+    return {
+      action: 'command',
+      command: `callback:${parsedPayload.action}`,
+      userId,
+      noticeSent: true,
+    };
+  }
+
+  if (parsedPayload.action === 'list') {
+    await api.answerCallback(callbackId, {
+      notification: formatAdminsMessage(adminUserIds, adminStore),
+    });
+    return {
+      action: 'command',
+      command: 'callback:admin-list',
+      userId,
+      noticeSent: true,
+    };
+  }
+
+  if (!adminStore) {
+    await api.answerCallback(callbackId, {
+      notification: 'Runtime-список администраторов не подключён.',
+    });
+    return {
+      action: 'command',
+      command: `callback:${parsedPayload.action}`,
+      userId,
+      noticeSent: true,
+    };
+  }
+
+  const command =
+    parsedPayload.action === 'add' ? '/addadmin' : '/removeadmin';
+  const result = applyAdminCommand(
+    adminStore,
+    adminUserIds,
+    command,
+    String(parsedPayload.userId),
+  );
+
+  await api.answerCallback(callbackId, {
+    notification: formatAdminCommandResult(result),
+  });
+
+  return {
+    action: 'command',
+    command: `callback:${parsedPayload.action}`,
+    userId,
+    noticeSent: true,
+  };
 }
 
 async function sendModerationNotice({
@@ -220,6 +325,7 @@ async function maybeHandleCommand({
         '/admins - показать администраторов бота',
         '/addadmin user_id - добавить администратора бота',
         '/removeadmin user_id - удалить runtime-администратора',
+        'Можно отправить контакт пользователя: бот покажет user_id и кнопки для админки.',
       ].join('\n'),
     });
     return { handled: true, command, noticeSent: true };
@@ -335,6 +441,83 @@ async function maybeHandleCommand({
   return { handled: true, command, noticeSent: true };
 }
 
+async function maybeHandleContactAdminCandidate({
+  api,
+  message,
+  chatId,
+  userId,
+  adminStore,
+  adminUserIds,
+}) {
+  const contact = extractContactCandidate(message?.body?.attachments);
+  if (!contact) {
+    return { handled: false };
+  }
+
+  if (!isAdmin(userId, adminUserIds, adminStore)) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text:
+        'Контакты для управления администраторами может обрабатывать только администратор бота.',
+    });
+    return {
+      handled: true,
+      command: 'contact-admin-candidate',
+      noticeSent: true,
+    };
+  }
+
+  if (!adminStore) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Runtime-список администраторов не подключён.',
+    });
+    return {
+      handled: true,
+      command: 'contact-admin-candidate',
+      noticeSent: true,
+    };
+  }
+
+  if (!contact.userId) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: [
+        `Контакт получил${contact.name ? `: ${contact.name}` : ''}.`,
+        'MAX user_id в карточке не нашёл.',
+        'Попросите пользователя написать боту /id или добавьте его командой /addadmin user_id.',
+      ].join('\n'),
+    });
+    return {
+      handled: true,
+      command: 'contact-admin-candidate',
+      noticeSent: true,
+    };
+  }
+
+  await sendReply({
+    api,
+    chatId,
+    userId,
+    text: formatContactAdminMessage(contact),
+    extra: {
+      attachments: [buildAdminContactKeyboard(contact.userId)],
+    },
+  });
+
+  return {
+    handled: true,
+    command: 'contact-admin-candidate',
+    noticeSent: true,
+  };
+}
+
 function isAdmin(userId, adminUserIds, adminStore) {
   if (!userId) return false;
   const allAdminUserIds = getAllAdminUserIds(adminUserIds, adminStore);
@@ -369,6 +552,115 @@ function applyAdminCommand(adminStore, baseAdminUserIds, command, argument) {
   return {
     type: 'removeadmin',
     ...adminStore.removeAdmin(argument),
+  };
+}
+
+function parseAdminCallbackPayload(payload) {
+  if (payload === 'admin:list') {
+    return { action: 'list' };
+  }
+
+  const match = String(payload || '').match(/^admin:(add|remove):(\d+)$/u);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    action: match[1],
+    userId: Number.parseInt(match[2], 10),
+  };
+}
+
+function getCallbackUserId(update) {
+  return (
+    update?.callback?.user?.user_id ??
+    update?.callback?.sender?.user_id ??
+    update?.callback?.user_id ??
+    update?.user?.user_id ??
+    null
+  );
+}
+
+function extractContactCandidate(attachments) {
+  const contactAttachment = attachments?.find((item) => item?.type === 'contact');
+  if (!contactAttachment) {
+    return null;
+  }
+
+  const payload = contactAttachment.payload || {};
+  const maxInfo = payload.max_info || payload.maxInfo || {};
+
+  return {
+    userId: parsePositiveInteger(
+      maxInfo.user_id ??
+        maxInfo.userId ??
+        maxInfo.id ??
+        payload.user_id ??
+        payload.userId ??
+        payload.max_user_id ??
+        payload.maxUserId ??
+        contactAttachment.user_id ??
+        contactAttachment.userId,
+    ),
+    name:
+      maxInfo.name ||
+      maxInfo.full_name ||
+      [maxInfo.first_name, maxInfo.last_name].filter(Boolean).join(' ') ||
+      payload.name ||
+      extractVcfFullName(payload.vcf_info) ||
+      '',
+    hasHash: Boolean(payload.hash),
+  };
+}
+
+function parsePositiveInteger(value) {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractVcfFullName(vcfInfo) {
+  if (!vcfInfo) return '';
+  const normalized = String(vcfInfo).replaceAll('\\r\\n', '\n');
+  const match = normalized.match(/^FN(?:;[^:]*)?:(.+)$/im);
+  return match?.[1]?.trim() || '';
+}
+
+function formatContactAdminMessage(contact) {
+  return [
+    `Получен контакт${contact.name ? `: ${contact.name}` : ''}.`,
+    `MAX user_id: ${contact.userId}`,
+    'Что сделать с этим пользователем?',
+  ].join('\n');
+}
+
+function buildAdminContactKeyboard(userId) {
+  return {
+    type: 'inline_keyboard',
+    payload: {
+      buttons: [
+        [
+          {
+            type: 'callback',
+            text: 'Добавить админом',
+            payload: `admin:add:${userId}`,
+          },
+        ],
+        [
+          {
+            type: 'callback',
+            text: 'Убрать админа',
+            payload: `admin:remove:${userId}`,
+          },
+        ],
+        [
+          {
+            type: 'callback',
+            text: 'Показать админов',
+            payload: 'admin:list',
+          },
+        ],
+      ],
+    },
   };
 }
 
@@ -485,14 +777,16 @@ function formatWords(words) {
   return words.join(', ');
 }
 
-async function sendReply({ api, chatId, userId, text }) {
+async function sendReply({ api, chatId, userId, text, extra = {} }) {
+  const options = { notify: false, ...extra };
+
   if (chatId) {
-    await api.sendMessageToChat(chatId, text, { notify: false });
+    await api.sendMessageToChat(chatId, text, options);
     return true;
   }
 
   if (userId) {
-    await api.sendMessageToUser(userId, text, { notify: false });
+    await api.sendMessageToUser(userId, text, options);
     return true;
   }
 

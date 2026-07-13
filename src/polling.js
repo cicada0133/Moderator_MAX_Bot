@@ -23,6 +23,8 @@ const moderator = createModerator({
   adminUserIds: config.adminUserIds,
 });
 
+const UPDATE_TYPES = ['message_created', 'message_callback'];
+
 let running = true;
 process.on('SIGINT', () => {
   running = false;
@@ -50,7 +52,7 @@ async function startPolling() {
         limit: config.pollingLimit,
         timeout: config.pollingTimeoutSec,
         marker,
-        types: ['message_created'],
+        types: UPDATE_TYPES,
       });
 
       marker = response?.marker ?? marker;
@@ -66,7 +68,7 @@ async function primeMarker() {
   const response = await api.getUpdates({
     limit: 1,
     timeout: 0,
-    types: ['message_created'],
+    types: UPDATE_TYPES,
   });
 
   if (config.processInitialUpdates) {

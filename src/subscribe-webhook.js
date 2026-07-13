@@ -14,7 +14,7 @@ const api = createMaxApi({
 
 const result = await api.createSubscription({
   url: config.webhookPublicUrl,
-  updateTypes: ['message_created'],
+  updateTypes: ['message_created', 'message_callback'],
   secret: config.webhookSecret,
 });
 

@@ -69,6 +69,11 @@ export function createMaxApi({ token, baseUrl }) {
         query: { user_id: userId },
         body: { text, ...extra },
       }),
+    answerCallback: (callbackId, body = {}) =>
+      request('POST', '/answers', {
+        query: { callback_id: callbackId },
+        body,
+      }),
     createSubscription: ({ url, updateTypes, secret }) =>
       request('POST', '/subscriptions', {
         body: {

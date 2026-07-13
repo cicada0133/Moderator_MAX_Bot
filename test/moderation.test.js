@@ -205,6 +205,173 @@ describe('createModerator', () => {
     );
   });
 
+  it('extracts MAX user id from contact cards and offers admin buttons', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: {
+          mid: 'mid-contact-1',
+          attachments: [
+            {
+              type: 'contact',
+              payload: {
+                max_info: {
+                  user_id: 456,
+                  name: 'Павел',
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('MAX user_id: 456'),
+      {
+        notify: false,
+        attachments: [
+          expect.objectContaining({
+            type: 'inline_keyboard',
+            payload: expect.objectContaining({
+              buttons: expect.arrayContaining([
+                [
+                  expect.objectContaining({
+                    type: 'callback',
+                    payload: 'admin:add:456',
+                  }),
+                ],
+              ]),
+            }),
+          }),
+        ],
+      },
+    );
+  });
+
+  it('explains when a contact card has no MAX user id', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: {
+          mid: 'mid-contact-2',
+          attachments: [
+            {
+              type: 'contact',
+              payload: {
+                vcf_info: 'BEGIN:VCARD\nFN:Павел\nEND:VCARD',
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('MAX user_id в карточке не нашёл.'),
+      { notify: false },
+    );
+  });
+
+  it('lets admins add users from contact callback buttons', async () => {
+    const api = {
+      answerCallback: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+      addAdmin: vi.fn(() => ({
+        changed: true,
+        userId: 456,
+      })),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-1',
+        payload: 'admin:add:456',
+        user: { user_id: 123 },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.addAdmin).toHaveBeenCalledWith('456');
+    expect(api.answerCallback).toHaveBeenCalledWith('callback-1', {
+      notification: 'Администратор добавлен: 456',
+    });
+  });
+
+  it('rejects contact callback buttons from non-admin users', async () => {
+    const api = {
+      answerCallback: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+      addAdmin: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-2',
+        payload: 'admin:add:456',
+        user: { user_id: 789 },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.addAdmin).not.toHaveBeenCalled();
+    expect(api.answerCallback).toHaveBeenCalledWith('callback-2', {
+      notification: 'Эта кнопка доступна только администратору бота.',
+    });
+  });
+
   it('does not remove base env admins through chat commands', async () => {
     const api = {
       deleteMessage: vi.fn(),
