@@ -9,6 +9,7 @@
     "start": "node scripts/run-with-ca.js src/polling.js",
     "start:webhook": "node scripts/run-with-ca.js src/webhook-server.js",
     "webhook:subscribe": "node scripts/run-with-ca.js src/subscribe-webhook.js",
+    "dictionary:show": "node scripts/show-dictionary.js",
     "test": "vitest run"
   },
   "engines": {

@@ -14,6 +14,9 @@ export function loadConfig(env = process.env) {
       env.MODERATION_WARNING || 'Сообщение удалено: в чате запрещён мат.',
     customBadWords: parseList(env.CUSTOM_BAD_WORDS),
     allowWords: parseList(env.ALLOW_WORDS),
+    adminUserIds: parseNumberList(env.BOT_ADMIN_IDS),
+    customDictionaryPath:
+      env.CUSTOM_DICTIONARY_PATH || 'data/custom-dictionary.json',
     pollingTimeoutSec: parseInteger(env.POLLING_TIMEOUT_SEC, 60),
     pollingLimit: parseInteger(env.POLLING_LIMIT, 100),
     processInitialUpdates: parseBoolean(env.PROCESS_INITIAL_UPDATES, false),
@@ -50,4 +53,10 @@ function parseList(value) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseNumberList(value) {
+  return parseList(value)
+    .map((item) => Number.parseInt(item, 10))
+    .filter((item) => !Number.isNaN(item));
 }

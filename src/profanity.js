@@ -41,6 +41,16 @@ const DICTIONARY_WORDS = new Set(
     .filter((word) => word.length >= 2),
 );
 
+export function getBuiltInBadWords() {
+  return [...DICTIONARY_WORDS].sort((left, right) =>
+    left.localeCompare(right, 'ru'),
+  );
+}
+
+export function getBuiltInBadWordsCount() {
+  return DICTIONARY_WORDS.size;
+}
+
 export function findProfanity(text, { customWords = [], allowWords = [] } = {}) {
   if (!text || typeof text !== 'string') {
     return { matched: false };

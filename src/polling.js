@@ -1,8 +1,10 @@
 import { loadConfig } from './config.js';
+import { createCustomDictionaryStore } from './custom-dictionary.js';
 import { createMaxApi } from './max-api.js';
 import { createModerator } from './moderation.js';
 
 const config = loadConfig();
+const dictionaryStore = createCustomDictionaryStore(config.customDictionaryPath);
 const api = createMaxApi({
   token: config.token,
   baseUrl: config.apiBaseUrl,
@@ -14,6 +16,8 @@ const moderator = createModerator({
   warningText: config.moderationWarning,
   customBadWords: config.customBadWords,
   allowWords: config.allowWords,
+  dictionaryStore,
+  adminUserIds: config.adminUserIds,
 });
 
 let running = true;
@@ -76,6 +80,10 @@ async function processUpdates(updates) {
       if (['deleted', 'would-delete'].includes(result.action)) {
         console.log(
           `${result.action}: message=${result.messageId}; chat=${result.chatId ?? 'unknown'}; user=${result.userId ?? 'unknown'}; token=${result.token ?? 'unknown'}; reason=${result.reason}; notice=${result.noticeSent}`,
+        );
+      } else if (result.action === 'command') {
+        console.log(
+          `command: ${result.command}; message=${result.messageId}; chat=${result.chatId ?? 'unknown'}; user=${result.userId ?? 'unknown'}; notice=${result.noticeSent}`,
         );
       }
     } catch (error) {
