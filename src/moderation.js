@@ -847,7 +847,7 @@ async function maybeHandleCommand({
       chatId,
       userId,
       text:
-        'Команда доступна только администратору бота. Напишите /id и добавьте этот user_id в BOT_ADMIN_IDS.',
+        'Команда доступна только администраторам бота. По вопросам модерации обратитесь к администратору чата.',
     });
     return { handled: true, command, noticeSent: true };
   }

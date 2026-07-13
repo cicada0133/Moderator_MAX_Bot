@@ -127,6 +127,35 @@ describe('createModerator', () => {
     expect(api.sendMessageToUser).not.toHaveBeenCalled();
   });
 
+  it('shows a neutral group message for non-admin moderator commands', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminUserIds: [999],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: 777 },
+        body: { mid: 'mid-group-non-admin-command', text: '/ban 30' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      777,
+      'Команда доступна только администраторам бота. По вопросам модерации обратитесь к администратору чата.',
+      { notify: false },
+    );
+    expect(api.sendMessageToUser).not.toHaveBeenCalled();
+  });
+
   it('ignores direct contacts from non-admin users', async () => {
     const api = {
       deleteMessage: vi.fn(),
