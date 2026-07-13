@@ -432,6 +432,39 @@ describe('createModerator', () => {
     );
   });
 
+  it('does not let admins soft-ban bot admins through commands', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const sanctionStore = {
+      setBan: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      sanctionStore,
+      adminUserIds: [123, 456],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: 777 },
+        body: { mid: 'mid-ban-admin-command', text: '/ban 456 30m' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(sanctionStore.setBan).not.toHaveBeenCalled();
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      777,
+      'Администраторов бота нельзя отправить в soft-ban.',
+      { notify: false },
+    );
+  });
+
   it('deletes messages from soft-banned users only in the banned chat', async () => {
     const api = {
       deleteMessage: vi.fn(),
@@ -470,6 +503,53 @@ describe('createModerator', () => {
     expect(api.deleteMessage).toHaveBeenCalledWith('mid-soft-ban-1');
     expect(otherChatResult.action).toBe('allowed');
     expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply soft-ban to admins but still moderates their profanity', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const sanctionStore = {
+      getActiveBan: vi.fn(() => ({
+        chatId: 777,
+        userId: 456,
+        expiresAt: null,
+      })),
+    };
+    const moderator = createModerator({
+      api,
+      sanctionStore,
+      adminUserIds: [456],
+      dryRun: false,
+      notify: true,
+      warningText:
+        '{user}, ваше сообщение удалено: в чате запрещена ненормативная лексика.',
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 456,
+          name: 'Мария',
+          is_bot: false,
+        },
+        recipient: { chat_id: 777 },
+        body: { mid: 'mid-admin-profanity', text: 'ну это пиздец' },
+      },
+    });
+
+    expect(result.action).toBe('deleted');
+    expect(result.reason).toBe('dictionary');
+    expect(sanctionStore.getActiveBan).not.toHaveBeenCalled();
+    expect(api.deleteMessage).toHaveBeenCalledWith('mid-admin-profanity');
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      777,
+      'Мария, ваше сообщение удалено: в чате запрещена ненормативная лексика.',
+      { notify: false },
+    );
   });
 
   it('extracts MAX user id from contact cards and offers admin buttons', async () => {
@@ -679,6 +759,42 @@ describe('createModerator', () => {
           format: 'markdown',
           text: expect.stringContaining('Soft-ban включён'),
         }),
+      }),
+    );
+  });
+
+  it('does not let admins soft-ban bot admins from callback buttons', async () => {
+    const api = {
+      answerCallback: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+    };
+    const sanctionStore = {
+      setBan: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      sanctionStore,
+      adminUserIds: [123, 456],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-soft-ban-admin',
+        payload: 'sanction:ban:777:456:30m',
+        user: { user_id: 123 },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(sanctionStore.setBan).not.toHaveBeenCalled();
+    expect(api.answerCallback).toHaveBeenCalledWith(
+      'callback-soft-ban-admin',
+      expect.objectContaining({
+        notification: 'Администраторов бота нельзя отправить в soft-ban.',
       }),
     );
   });
