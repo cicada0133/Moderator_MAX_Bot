@@ -259,6 +259,8 @@ describe('createModerator', () => {
     expect(result.action).toBe('command');
     const helpText = api.sendMessageToUser.mock.calls[0][1];
     expect(helpText).not.toContain('Быстро');
+    expect(helpText).toContain('/start — открыть панель управления в ЛС');
+    expect(helpText).toContain('/menu — открыть панель управления в ЛС');
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       expect.stringContaining('Баны\n  /banhelp'),
