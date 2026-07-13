@@ -1,9 +1,11 @@
 import { loadConfig } from './config.js';
+import { createAdminStore } from './admin-store.js';
 import { createCustomDictionaryStore } from './custom-dictionary.js';
 import { createMaxApi } from './max-api.js';
 import { createModerator } from './moderation.js';
 
 const config = loadConfig();
+const adminStore = createAdminStore(config.customAdminsPath);
 const dictionaryStore = createCustomDictionaryStore(config.customDictionaryPath);
 const api = createMaxApi({
   token: config.token,
@@ -17,6 +19,7 @@ const moderator = createModerator({
   customBadWords: config.customBadWords,
   allowWords: config.allowWords,
   dictionaryStore,
+  adminStore,
   adminUserIds: config.adminUserIds,
 });
 

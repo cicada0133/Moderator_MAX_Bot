@@ -132,6 +132,113 @@ describe('createModerator', () => {
     );
   });
 
+  it('lets configured admins add runtime admins', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+      addAdmin: vi.fn(() => ({
+        changed: true,
+        userId: 456,
+      })),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-admin-1', text: '/addadmin 456' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.addAdmin).toHaveBeenCalledWith('456');
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      'Администратор добавлен: 456',
+      { notify: false },
+    );
+  });
+
+  it('lets runtime admins use admin commands without restart', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [456] })),
+    };
+    const dictionaryStore = {
+      list: vi.fn(() => ({ badWords: [], allowWords: [] })),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      dictionaryStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 456, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-admin-2', text: '/badwords' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      456,
+      expect.stringContaining('Пользовательский банлист: пусто'),
+      { notify: false },
+    );
+  });
+
+  it('does not remove base env admins through chat commands', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [456] })),
+      removeAdmin: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 456, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-admin-3', text: '/removeadmin 123' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.removeAdmin).not.toHaveBeenCalled();
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      456,
+      'Администратор 123 задан в BOT_ADMIN_IDS. Его нельзя удалить командой, только через .env.',
+      { notify: false },
+    );
+  });
+
   it('uses runtime dictionary words during moderation', async () => {
     const api = {
       deleteMessage: vi.fn(),

@@ -104,6 +104,7 @@ ALLOW_WORDS=слово1,слово2
 ```dotenv
 BOT_ADMIN_IDS=123456789
 CUSTOM_DICTIONARY_PATH=data/custom-dictionary.json
+CUSTOM_ADMINS_PATH=data/admins.json
 ```
 
 После изменения `.env` перезапустите бота. Команды администратора:
@@ -114,9 +115,14 @@ CUSTOM_DICTIONARY_PATH=data/custom-dictionary.json
 /unbanword слово
 /allowword слово
 /unallowword слово
+/admins
+/addadmin user_id
+/removeadmin user_id
 ```
 
 Команда `/badwords` показывает размер встроенного словаря и пользовательские добавления. Полный встроенный словарь в чат не выводится, чтобы не засорять переписку.
+
+Команда `/addadmin` добавляет администратора в локальный файл `data/admins.json`, поэтому перезапуск после неё не нужен. Администраторы из `.env` считаются базовыми: командой `/removeadmin` их удалить нельзя, чтобы случайно не потерять доступ к управлению ботом.
 
 Если фильтр слишком строгий или мягкий, правьте правила в `src/profanity.js` и запускайте:
 

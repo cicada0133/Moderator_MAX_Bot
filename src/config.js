@@ -17,6 +17,7 @@ export function loadConfig(env = process.env) {
     adminUserIds: parseNumberList(env.BOT_ADMIN_IDS),
     customDictionaryPath:
       env.CUSTOM_DICTIONARY_PATH || 'data/custom-dictionary.json',
+    customAdminsPath: env.CUSTOM_ADMINS_PATH || 'data/admins.json',
     pollingTimeoutSec: parseInteger(env.POLLING_TIMEOUT_SEC, 60),
     pollingLimit: parseInteger(env.POLLING_LIMIT, 100),
     processInitialUpdates: parseBoolean(env.PROCESS_INITIAL_UPDATES, false),

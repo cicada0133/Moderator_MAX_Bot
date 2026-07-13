@@ -8,6 +8,7 @@ export function createModerator({
   customBadWords = [],
   allowWords = [],
   dictionaryStore = null,
+  adminStore = null,
   adminUserIds = [],
 }) {
   async function handleUpdate(update) {
@@ -38,6 +39,7 @@ export function createModerator({
       chatId,
       userId,
       dictionaryStore,
+      adminStore,
       adminUserIds,
     });
     if (commandResult.handled) {
@@ -180,6 +182,7 @@ async function maybeHandleCommand({
   chatId,
   userId,
   dictionaryStore,
+  adminStore,
   adminUserIds,
 }) {
   const trimmed = text.trim();
@@ -214,6 +217,9 @@ async function maybeHandleCommand({
         '/unbanword слово - удалить из банлиста',
         '/allowword слово - добавить исключение',
         '/unallowword слово - удалить исключение',
+        '/admins - показать администраторов бота',
+        '/addadmin user_id - добавить администратора бота',
+        '/removeadmin user_id - удалить runtime-администратора',
       ].join('\n'),
     });
     return { handled: true, command, noticeSent: true };
@@ -227,18 +233,63 @@ async function maybeHandleCommand({
     '/removebad',
     '/allowword',
     '/unallowword',
+    '/admins',
+    '/addadmin',
+    '/removeadmin',
+    '/deladmin',
   ]);
   if (!adminCommands.has(command)) {
     return { handled: false };
   }
 
-  if (!isAdmin(userId, adminUserIds)) {
+  if (!isAdmin(userId, adminUserIds, adminStore)) {
     await sendReply({
       api,
       chatId,
       userId,
       text:
         'Команда доступна только администратору бота. Напишите /id и добавьте этот user_id в BOT_ADMIN_IDS.',
+    });
+    return { handled: true, command, noticeSent: true };
+  }
+
+  if (command === '/admins') {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: formatAdminsMessage(adminUserIds, adminStore),
+    });
+    return { handled: true, command, noticeSent: true };
+  }
+
+  if (['/addadmin', '/removeadmin', '/deladmin'].includes(command)) {
+    if (!adminStore) {
+      await sendReply({
+        api,
+        chatId,
+        userId,
+        text: 'Runtime-список администраторов не подключён.',
+      });
+      return { handled: true, command, noticeSent: true };
+    }
+
+    if (!argument) {
+      await sendReply({
+        api,
+        chatId,
+        userId,
+        text: 'После команды нужно указать MAX user_id.',
+      });
+      return { handled: true, command, noticeSent: true };
+    }
+
+    const result = applyAdminCommand(adminStore, adminUserIds, command, argument);
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: formatAdminCommandResult(result),
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -284,8 +335,81 @@ async function maybeHandleCommand({
   return { handled: true, command, noticeSent: true };
 }
 
-function isAdmin(userId, adminUserIds) {
-  return Boolean(userId && adminUserIds.includes(Number(userId)));
+function isAdmin(userId, adminUserIds, adminStore) {
+  if (!userId) return false;
+  const allAdminUserIds = getAllAdminUserIds(adminUserIds, adminStore);
+  return allAdminUserIds.includes(Number(userId));
+}
+
+function getAllAdminUserIds(adminUserIds, adminStore) {
+  const runtimeAdminUserIds = adminStore?.list().adminUserIds || [];
+  return [...new Set([...adminUserIds, ...runtimeAdminUserIds])].sort(
+    (left, right) => left - right,
+  );
+}
+
+function applyAdminCommand(adminStore, baseAdminUserIds, command, argument) {
+  if (command === '/addadmin') {
+    return {
+      type: 'addadmin',
+      ...adminStore.addAdmin(argument),
+    };
+  }
+
+  const parsedUserId = Number.parseInt(argument, 10);
+  if (baseAdminUserIds.includes(parsedUserId)) {
+    return {
+      changed: false,
+      reason: 'base-admin',
+      type: 'removeadmin',
+      userId: parsedUserId,
+    };
+  }
+
+  return {
+    type: 'removeadmin',
+    ...adminStore.removeAdmin(argument),
+  };
+}
+
+function formatAdminCommandResult(result) {
+  if (result.reason === 'invalid-user-id') {
+    return 'Не удалось разобрать user_id. Нужен числовой MAX user_id.';
+  }
+
+  if (!result.changed && result.reason === 'already-exists') {
+    return `Администратор уже добавлен: ${result.userId}`;
+  }
+
+  if (!result.changed && result.reason === 'not-found') {
+    return `Администратор не найден в runtime-списке: ${result.userId}`;
+  }
+
+  if (!result.changed && result.reason === 'base-admin') {
+    return `Администратор ${result.userId} задан в BOT_ADMIN_IDS. Его нельзя удалить командой, только через .env.`;
+  }
+
+  if (result.type === 'addadmin') {
+    return `Администратор добавлен: ${result.userId}`;
+  }
+
+  return `Администратор удалён из runtime-списка: ${result.userId}`;
+}
+
+function formatAdminsMessage(baseAdminUserIds, adminStore) {
+  const runtimeAdminUserIds = adminStore?.list().adminUserIds || [];
+  const allAdminUserIds = getAllAdminUserIds(baseAdminUserIds, adminStore);
+
+  return [
+    `Администраторы бота: ${formatIds(allAdminUserIds)}`,
+    `Из .env: ${formatIds(baseAdminUserIds)}`,
+    `Добавлены командами: ${formatIds(runtimeAdminUserIds)}`,
+  ].join('\n');
+}
+
+function formatIds(ids) {
+  if (!ids?.length) return 'пусто';
+  return ids.join(', ');
 }
 
 function applyDictionaryCommand(dictionaryStore, command, argument) {
