@@ -27,6 +27,8 @@ npm start
 
 ```dotenv
 DRY_RUN=true
+MODERATION_NOTIFY=true
+MODERATION_WARNING=Тест: нашёл запрещённое слово "{token}", правило "{reason}". Пока DRY_RUN=true, сообщение не удаляю.
 ```
 
 Так бот будет писать в консоль, какие сообщения он удалил бы, но не будет вызывать удаление.

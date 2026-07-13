@@ -64,6 +64,11 @@ export function createMaxApi({ token, baseUrl }) {
         query: { chat_id: chatId },
         body: { text, ...extra },
       }),
+    sendMessageToUser: (userId, text, extra = {}) =>
+      request('POST', '/messages', {
+        query: { user_id: userId },
+        body: { text, ...extra },
+      }),
     createSubscription: ({ url, updateTypes, secret }) =>
       request('POST', '/subscriptions', {
         body: {
