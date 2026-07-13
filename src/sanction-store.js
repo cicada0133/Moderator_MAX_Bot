@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const EMPTY_SANCTIONS = {
   bans: [],
+  autoBanSettings: [],
+  violations: [],
 };
 
 export function createSanctionStore(filePath) {
@@ -96,6 +98,120 @@ export function createSanctionStore(filePath) {
     return { changed: true, ban };
   }
 
+  function getAutoBanSettings(chatId, defaults = {}) {
+    const sanctions = readSanctions();
+    const stored = sanctions.autoBanSettings.find(
+      (item) => String(item.chatId) === String(chatId),
+    );
+
+    return normalizeAutoBanSettings({ ...defaults, ...stored, chatId });
+  }
+
+  function setAutoBanSettings({
+    chatId,
+    enabled,
+    threshold,
+    windowMinutes,
+    durationMinutes,
+    moderatorUserId,
+    now = new Date(),
+  }) {
+    const normalized = normalizeAutoBanSettings({
+      chatId,
+      enabled,
+      threshold,
+      windowMinutes,
+      durationMinutes,
+      updatedByUserId: moderatorUserId,
+      updatedAt: now.toISOString(),
+    });
+    if (!normalized) {
+      return { changed: false, reason: 'invalid-auto-ban-settings' };
+    }
+
+    const sanctions = readSanctions();
+    const existing = sanctions.autoBanSettings.find(
+      (item) => String(item.chatId) === String(normalized.chatId),
+    );
+    if (existing) {
+      Object.assign(existing, normalized);
+    } else {
+      sanctions.autoBanSettings.push(normalized);
+    }
+
+    writeSanctions(sanctions);
+    return { changed: true, settings: normalized };
+  }
+
+  function recordViolation({
+    chatId,
+    userId,
+    windowMinutes,
+    now = new Date(),
+  }) {
+    const parsedUserId = parseUserId(userId);
+    const normalizedWindowMinutes = parsePositiveInteger(windowMinutes);
+    if (!chatId || !parsedUserId || !normalizedWindowMinutes) {
+      return { changed: false, reason: 'invalid-violation-input' };
+    }
+
+    const sanctions = readSanctions();
+    const cutoffMs = now.getTime() - normalizedWindowMinutes * 60 * 1000;
+    let record = sanctions.violations.find(
+      (item) =>
+        String(item.chatId) === String(chatId) && item.userId === parsedUserId,
+    );
+    if (!record) {
+      record = {
+        chatId,
+        userId: parsedUserId,
+        timestamps: [],
+        updatedAt: now.toISOString(),
+      };
+      sanctions.violations.push(record);
+    }
+
+    record.timestamps = record.timestamps
+      .map((value) => normalizeDate(value))
+      .filter(Boolean)
+      .filter((value) => new Date(value).getTime() >= cutoffMs);
+    record.timestamps.push(now.toISOString());
+    record.updatedAt = now.toISOString();
+
+    writeSanctions(sanctions);
+    return {
+      changed: true,
+      chatId,
+      userId: parsedUserId,
+      count: record.timestamps.length,
+      timestamps: record.timestamps,
+    };
+  }
+
+  function clearViolations({ chatId, userId }) {
+    const parsedUserId = parseUserId(userId);
+    if (!chatId || !parsedUserId) {
+      return { changed: false, reason: 'invalid-violation-input' };
+    }
+
+    const sanctions = readSanctions();
+    const before = sanctions.violations.length;
+    sanctions.violations = sanctions.violations.filter(
+      (item) =>
+        !(
+          String(item.chatId) === String(chatId) &&
+          item.userId === parsedUserId
+        ),
+    );
+
+    if (sanctions.violations.length === before) {
+      return { changed: false, reason: 'not-found' };
+    }
+
+    writeSanctions(sanctions);
+    return { changed: true };
+  }
+
   function readSanctions() {
     ensureFile();
     const content = fs.readFileSync(absolutePath, 'utf8');
@@ -103,6 +219,8 @@ export function createSanctionStore(filePath) {
 
     return {
       bans: normalizeBans(parsed.bans),
+      autoBanSettings: normalizeAutoBanSettingsList(parsed.autoBanSettings),
+      violations: normalizeViolations(parsed.violations),
     };
   }
 
@@ -127,6 +245,10 @@ export function createSanctionStore(filePath) {
     getActiveBan,
     setBan,
     liftBan,
+    getAutoBanSettings,
+    setAutoBanSettings,
+    recordViolation,
+    clearViolations,
   };
 }
 
@@ -170,6 +292,63 @@ function normalizeBans(value) {
     .sort(compareBans);
 }
 
+function normalizeAutoBanSettingsList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => normalizeAutoBanSettings(item))
+    .filter(Boolean)
+    .sort((left, right) => String(left.chatId).localeCompare(String(right.chatId)));
+}
+
+function normalizeAutoBanSettings(value = {}) {
+  if (!value.chatId) {
+    return null;
+  }
+
+  const threshold = parsePositiveInteger(value.threshold);
+  const windowMinutes = parsePositiveInteger(value.windowMinutes);
+  const durationMinutes = parsePositiveInteger(value.durationMinutes);
+  if (!threshold || !windowMinutes || !durationMinutes) {
+    return null;
+  }
+
+  return {
+    chatId: value.chatId,
+    enabled: Boolean(value.enabled),
+    threshold,
+    windowMinutes,
+    durationMinutes,
+    updatedAt: normalizeDate(value.updatedAt),
+    updatedByUserId: parseUserId(value.updatedByUserId),
+  };
+}
+
+function normalizeViolations(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => normalizeViolation(item))
+    .filter(Boolean)
+    .sort(compareViolations);
+}
+
+function normalizeViolation(value = {}) {
+  const userId = parseUserId(value.userId);
+  if (!value.chatId || !userId) {
+    return null;
+  }
+
+  const timestamps = Array.isArray(value.timestamps)
+    ? value.timestamps.map((item) => normalizeDate(item)).filter(Boolean)
+    : [];
+
+  return {
+    chatId: value.chatId,
+    userId,
+    timestamps,
+    updatedAt: normalizeDate(value.updatedAt),
+  };
+}
+
 function normalizeBan(value = {}) {
   const userId = parseUserId(value.userId ?? value.user_id);
   if (!value.chatId || !userId || !value.createdAt) {
@@ -202,7 +381,19 @@ function compareBans(left, right) {
   return leftTime - rightTime || left.userId - right.userId;
 }
 
+function compareViolations(left, right) {
+  return (
+    String(left.chatId).localeCompare(String(right.chatId)) ||
+    left.userId - right.userId
+  );
+}
+
 function parseUserId(value) {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parsePositiveInteger(value) {
   const parsed = Number.parseInt(String(value || '').trim(), 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
@@ -216,4 +407,3 @@ function normalizeDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
-

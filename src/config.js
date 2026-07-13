@@ -19,6 +19,12 @@ export function loadConfig(env = process.env) {
       env.CUSTOM_DICTIONARY_PATH || 'data/custom-dictionary.json',
     customAdminsPath: env.CUSTOM_ADMINS_PATH || 'data/admins.json',
     customSanctionsPath: env.CUSTOM_SANCTIONS_PATH || 'data/sanctions.json',
+    autoBanDefaults: {
+      enabled: parseBoolean(env.AUTO_BAN_ENABLED, false),
+      threshold: parsePositiveInteger(env.AUTO_BAN_THRESHOLD, 3),
+      windowMinutes: parsePositiveInteger(env.AUTO_BAN_WINDOW_MINUTES, 10),
+      durationMinutes: parsePositiveInteger(env.AUTO_BAN_DURATION_MINUTES, 30),
+    },
     pollingTimeoutSec: parseInteger(env.POLLING_TIMEOUT_SEC, 60),
     pollingLimit: parseInteger(env.POLLING_LIMIT, 100),
     processInitialUpdates: parseBoolean(env.PROCESS_INITIAL_UPDATES, false),
@@ -47,6 +53,11 @@ function parseInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) return fallback;
   return parsed;
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = parseInteger(value, fallback);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseList(value) {

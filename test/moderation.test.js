@@ -810,6 +810,145 @@ describe('createModerator', () => {
     );
   });
 
+  it('lets admins configure auto-ban thresholds per group', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const sanctionStore = {
+      getAutoBanSettings: vi.fn((chatId, defaults) => ({
+        chatId,
+        ...defaults,
+      })),
+      setAutoBanSettings: vi.fn((settings) => ({
+        changed: true,
+        settings: {
+          chatId: settings.chatId,
+          enabled: settings.enabled,
+          threshold: settings.threshold,
+          windowMinutes: settings.windowMinutes,
+          durationMinutes: settings.durationMinutes,
+        },
+      })),
+    };
+    const moderator = createModerator({
+      api,
+      sanctionStore,
+      adminUserIds: [123],
+      autoBanDefaults: {
+        enabled: false,
+        threshold: 3,
+        windowMinutes: 10,
+        durationMinutes: 30,
+      },
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: 777 },
+        body: { mid: 'mid-autoban-command', text: '/autoban 2 5 15' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(sanctionStore.setAutoBanSettings).toHaveBeenCalledWith({
+      chatId: 777,
+      moderatorUserId: 123,
+      enabled: true,
+      threshold: 2,
+      windowMinutes: 5,
+      durationMinutes: 15,
+    });
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      777,
+      expect.stringContaining(
+        'Правило: 2 нарушений за 5 минут -> soft-ban на 15 минут.',
+      ),
+      { notify: false },
+    );
+  });
+
+  it('auto-bans non-admins after repeated profanity hits in the same window', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const sanctionStore = {
+      getActiveBan: vi.fn(() => null),
+      getAutoBanSettings: vi.fn(() => ({
+        chatId: 777,
+        enabled: true,
+        threshold: 2,
+        windowMinutes: 10,
+        durationMinutes: 30,
+      })),
+      recordViolation: vi.fn(() => ({
+        changed: true,
+        chatId: 777,
+        userId: 456,
+        count: 2,
+      })),
+      setBan: vi.fn(() => ({
+        changed: true,
+        action: 'created',
+        ban: {
+          chatId: 777,
+          userId: 456,
+          expiresAt: '2026-07-13T12:30:00.000Z',
+        },
+      })),
+      clearViolations: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      sanctionStore,
+      adminUserIds: [123],
+      dryRun: false,
+      notify: true,
+      warningText: 'Нашёл "{token}"',
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 456, name: 'Павел', is_bot: false },
+        recipient: { chat_id: 777 },
+        body: { mid: 'mid-autoban-hit', text: 'ну это пиздец' },
+      },
+    });
+
+    expect(result.action).toBe('deleted');
+    expect(result.autoBan).toEqual(
+      expect.objectContaining({ chatId: 777, userId: 456 }),
+    );
+    expect(api.deleteMessage).toHaveBeenCalledWith('mid-autoban-hit');
+    expect(sanctionStore.recordViolation).toHaveBeenCalledWith({
+      chatId: 777,
+      userId: 456,
+      windowMinutes: 10,
+    });
+    expect(sanctionStore.setBan).toHaveBeenCalledWith({
+      chatId: 777,
+      userId: 456,
+      durationMs: 30 * 60 * 1000,
+      moderatorUserId: null,
+      reason: 'auto-ban: 2 violations in 10 minutes',
+    });
+    expect(sanctionStore.clearViolations).toHaveBeenCalledWith({
+      chatId: 777,
+      userId: 456,
+    });
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      777,
+      expect.stringContaining('Авто soft-ban включён: Павел'),
+      { notify: false },
+    );
+  });
+
   it('does not apply soft-ban to admins but still moderates their profanity', async () => {
     const api = {
       deleteMessage: vi.fn(),

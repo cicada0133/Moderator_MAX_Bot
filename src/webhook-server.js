@@ -26,6 +26,7 @@ const moderator = createModerator({
   adminStore,
   sanctionStore,
   adminUserIds: config.adminUserIds,
+  autoBanDefaults: config.autoBanDefaults,
 });
 
 const app = express();

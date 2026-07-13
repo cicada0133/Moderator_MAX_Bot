@@ -24,6 +24,7 @@ const moderator = createModerator({
   adminStore,
   sanctionStore,
   adminUserIds: config.adminUserIds,
+  autoBanDefaults: config.autoBanDefaults,
 });
 
 const UPDATE_TYPES = ['message_created', 'message_callback'];

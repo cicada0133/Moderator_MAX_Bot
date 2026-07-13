@@ -18,6 +18,12 @@ export function createModerator({
   adminStore = null,
   sanctionStore = null,
   adminUserIds = [],
+  autoBanDefaults = {
+    enabled: false,
+    threshold: 3,
+    windowMinutes: 10,
+    durationMinutes: 30,
+  },
 }) {
   async function handleUpdate(update) {
     if (update?.update_type === 'message_callback') {
@@ -67,6 +73,7 @@ export function createModerator({
         adminStore,
         sanctionStore,
         adminUserIds,
+        autoBanDefaults,
         isDirectMessage,
       });
 
@@ -157,6 +164,7 @@ export function createModerator({
       adminStore,
       sanctionStore,
       adminUserIds,
+      autoBanDefaults,
       isDirectMessage,
     });
     if (commandResult.handled) {
@@ -232,6 +240,18 @@ export function createModerator({
       reason: result.reason,
       action: 'deleted',
     });
+    const autoBanResult = await maybeApplyAutoBan({
+      api,
+      notify,
+      chatId,
+      userId,
+      userName,
+      adminStore,
+      sanctionStore,
+      adminUserIds,
+      autoBanDefaults,
+      senderIsAdmin,
+    });
 
     return {
       action: 'deleted',
@@ -243,6 +263,8 @@ export function createModerator({
       reason: result.reason,
       token: result.token,
       noticeSent,
+      autoBan: autoBanResult.ban,
+      autoBanNoticeSent: autoBanResult.noticeSent,
     };
   }
 
@@ -544,6 +566,116 @@ function rememberKnownUser(adminStore, profile) {
   adminStore?.upsertKnownUser?.(profile);
 }
 
+async function maybeApplyAutoBan({
+  api,
+  notify,
+  chatId,
+  userId,
+  userName,
+  adminStore,
+  sanctionStore,
+  adminUserIds,
+  autoBanDefaults,
+  senderIsAdmin,
+}) {
+  if (
+    senderIsAdmin ||
+    !chatId ||
+    !userId ||
+    !sanctionStore?.getAutoBanSettings ||
+    !sanctionStore?.recordViolation ||
+    !sanctionStore?.setBan
+  ) {
+    return { applied: false, ban: null, noticeSent: false };
+  }
+
+  if (isAdmin(userId, adminUserIds, adminStore)) {
+    return { applied: false, ban: null, noticeSent: false };
+  }
+
+  const settings = sanctionStore.getAutoBanSettings(chatId, autoBanDefaults);
+  if (!settings?.enabled) {
+    return { applied: false, ban: null, noticeSent: false };
+  }
+
+  const violation = sanctionStore.recordViolation({
+    chatId,
+    userId,
+    windowMinutes: settings.windowMinutes,
+  });
+  if (!violation.changed || violation.count < settings.threshold) {
+    return {
+      applied: false,
+      ban: null,
+      noticeSent: false,
+      count: violation.count || 0,
+      threshold: settings.threshold,
+    };
+  }
+
+  const result = sanctionStore.setBan({
+    chatId,
+    userId,
+    durationMs: settings.durationMinutes * 60 * 1000,
+    moderatorUserId: null,
+    reason: `auto-ban: ${settings.threshold} violations in ${settings.windowMinutes} minutes`,
+  });
+
+  if (!result.changed) {
+    return {
+      applied: false,
+      ban: null,
+      noticeSent: false,
+      count: violation.count,
+      threshold: settings.threshold,
+    };
+  }
+
+  sanctionStore.clearViolations?.({ chatId, userId });
+  const noticeSent = await sendAutoBanNotice({
+    api,
+    notify,
+    chatId,
+    userId,
+    userName,
+    settings,
+  });
+
+  return {
+    applied: true,
+    ban: result.ban,
+    noticeSent,
+    count: violation.count,
+    threshold: settings.threshold,
+  };
+}
+
+async function sendAutoBanNotice({
+  api,
+  notify,
+  chatId,
+  userId,
+  userName,
+  settings,
+}) {
+  if (!notify || !chatId) {
+    return false;
+  }
+
+  const label = userName || `user_id ${userId}`;
+  await api.sendMessageToChat(
+    chatId,
+    [
+      `Авто soft-ban включён: ${label}`,
+      `Причина: ${settings.threshold} нарушений за ${formatMinutesLabel(settings.windowMinutes)}.`,
+      `Срок: ${formatMinutesLabel(settings.durationMinutes)}.`,
+      'Пока ban активен, бот будет удалять сообщения пользователя в этом чате.',
+    ].join('\n'),
+    { notify: false },
+  );
+  return true;
+}
+
 async function sendModerationNotice({
   api,
   notify,
@@ -651,6 +783,7 @@ async function maybeHandleCommand({
   adminStore,
   sanctionStore,
   adminUserIds,
+  autoBanDefaults,
   isDirectMessage = false,
 }) {
   if (!text) {
@@ -697,6 +830,7 @@ async function maybeHandleCommand({
     '/ban',
     '/unban',
     '/bans',
+    '/autoban',
   ]);
   if (!adminCommands.has(command)) {
     return { handled: false };
@@ -767,6 +901,19 @@ async function maybeHandleCommand({
       },
     });
     return { handled: true, command, noticeSent: true };
+  }
+
+  if (command === '/autoban') {
+    const result = await maybeHandleAutoBanCommand({
+      api,
+      argument,
+      chatId,
+      isGroupChat,
+      userId,
+      sanctionStore,
+      autoBanDefaults,
+    });
+    return { handled: true, command, noticeSent: result.noticeSent };
   }
 
   if (['/ban', '/unban', '/bans'].includes(command)) {
@@ -856,6 +1003,79 @@ async function maybeHandleCommand({
     text: formatDictionaryCommandResult(result),
   });
   return { handled: true, command, noticeSent: true };
+}
+
+async function maybeHandleAutoBanCommand({
+  api,
+  argument,
+  chatId,
+  isGroupChat,
+  userId,
+  sanctionStore,
+  autoBanDefaults,
+}) {
+  if (!isGroupChat || !chatId) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Авто-ban настраивается только в группе, потому что правило привязано к конкретному чату.',
+    });
+    return { noticeSent: true };
+  }
+
+  if (!sanctionStore?.getAutoBanSettings || !sanctionStore?.setAutoBanSettings) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Хранилище санкций не подключено.',
+    });
+    return { noticeSent: true };
+  }
+
+  const currentSettings = sanctionStore.getAutoBanSettings(
+    chatId,
+    autoBanDefaults,
+  );
+  const parsed = parseAutoBanCommand(argument, currentSettings);
+  if (!parsed.ok) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: formatAutoBanHelpMessage(currentSettings),
+    });
+    return { noticeSent: true };
+  }
+
+  if (parsed.action === 'status') {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: formatAutoBanSettingsMessage(currentSettings),
+    });
+    return { noticeSent: true };
+  }
+
+  const result = sanctionStore.setAutoBanSettings({
+    chatId,
+    moderatorUserId: userId,
+    ...parsed.settings,
+  });
+
+  await sendReply({
+    api,
+    chatId,
+    userId,
+    text: result.changed
+      ? formatAutoBanSettingsMessage(result.settings, {
+          prefix: 'Настройки авто-bana обновлены.',
+        })
+      : 'Не удалось сохранить настройки авто-bana. Проверьте числа в команде.',
+  });
+  return { noticeSent: true };
 }
 
 async function maybeHandleSanctionCommand({
@@ -1444,6 +1664,103 @@ function formatAdminCommandResult(result, adminStore, { links = false } = {}) {
   return `Администратор удалён из runtime-списка: ${userLabel}`;
 }
 
+function parseAutoBanCommand(argument, currentSettings) {
+  const parts = String(argument || '')
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+
+  if (!parts.length || ['status', 'статус'].includes(parts[0].toLowerCase())) {
+    return { ok: true, action: 'status' };
+  }
+
+  const first = parts[0].toLowerCase();
+  if (['off', 'disable', 'disabled', 'выкл', 'выключить'].includes(first)) {
+    return {
+      ok: true,
+      action: 'set',
+      settings: { ...currentSettings, enabled: false },
+    };
+  }
+
+  if (['on', 'enable', 'enabled', 'вкл', 'включить'].includes(first)) {
+    if (parts.length === 1) {
+      return {
+        ok: true,
+        action: 'set',
+        settings: { ...currentSettings, enabled: true },
+      };
+    }
+
+    const numbers = parseAutoBanNumbers(parts.slice(1));
+    return numbers
+      ? {
+          ok: true,
+          action: 'set',
+          settings: { ...numbers, enabled: true },
+        }
+      : { ok: false };
+  }
+
+  const numbers = parseAutoBanNumbers(parts);
+  return numbers
+    ? {
+        ok: true,
+        action: 'set',
+        settings: { ...numbers, enabled: true },
+      }
+    : { ok: false };
+}
+
+function parseAutoBanNumbers(parts) {
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const [threshold, windowMinutes, durationMinutes] = parts.map((item) =>
+    Number.parseInt(item, 10),
+  );
+  if (
+    ![threshold, windowMinutes, durationMinutes].every(
+      (item) => Number.isSafeInteger(item) && item > 0,
+    )
+  ) {
+    return null;
+  }
+
+  return { threshold, windowMinutes, durationMinutes };
+}
+
+function formatAutoBanHelpMessage(currentSettings) {
+  return [
+    'Формат авто-bana:',
+    '  /autoban — показать текущие настройки',
+    '  /autoban on — включить с текущими настройками',
+    '  /autoban off — выключить',
+    '  /autoban 3 10 30 — 3 нарушения за 10 минут, ban на 30 минут',
+    '',
+    'Текущие настройки:',
+    formatAutoBanRuleLine(currentSettings),
+  ].join('\n');
+}
+
+function formatAutoBanSettingsMessage(settings, { prefix = '' } = {}) {
+  return [
+    prefix,
+    `Авто-ban: ${settings?.enabled ? 'включён' : 'выключен'}`,
+    formatAutoBanRuleLine(settings),
+    '',
+    'Изменить: /autoban 3 10 30',
+    'Выключить: /autoban off',
+  ]
+    .filter((line) => line !== '')
+    .join('\n');
+}
+
+function formatAutoBanRuleLine(settings = {}) {
+  return `Правило: ${settings.threshold} нарушений за ${formatMinutesLabel(settings.windowMinutes)} -> soft-ban на ${formatMinutesLabel(settings.durationMinutes)}.`;
+}
+
 function formatHelpMessage() {
   return [
     'Команды модератора',
@@ -1465,6 +1782,7 @@ function formatHelpMessage() {
     '',
     'Баны',
     '  /banhelp — отдельное меню soft-ban',
+    '  /autoban — настройки авто-bana в текущей группе',
     '',
     'Через контакт',
     '  Отправьте контакт пользователя в нужную группу.',
@@ -1480,7 +1798,7 @@ function formatAdminPanelMessage() {
     'Панель администратора',
     '',
     'Кнопки здесь дублируют безопасные команды.',
-    'Soft-ban включается только вручную в группе: /ban, /unban, /bans.',
+    'Soft-ban управляется в группе: /ban, /unban, /bans, /autoban.',
   ].join('\n');
 }
 
@@ -1494,6 +1812,12 @@ function formatBanHelpMessage() {
     '  /ban user_id forever — бан до снятия',
     '  /unban user_id — снять бан',
     '  /bans — показать активные баны',
+    '',
+    'Авто-ban',
+    '  /autoban — показать текущие настройки',
+    '  /autoban on — включить',
+    '  /autoban off — выключить',
+    '  /autoban 3 10 30 — 3 нарушения за 10 минут, ban на 30 минут',
     '',
     'По сообщению пользователя',
     '  Ответьте командой на сообщение того пользователя, которого надо забанить.',

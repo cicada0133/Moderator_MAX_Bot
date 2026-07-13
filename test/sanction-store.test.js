@@ -69,4 +69,52 @@ describe('createSanctionStore', () => {
     );
     expect(store.listActiveBans(100, { now })).toEqual([]);
   });
+
+  it('stores auto-ban settings and prunes old violation hits', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'max-sanctions-'));
+    const store = createSanctionStore(path.join(directory, 'sanctions.json'));
+    const now = new Date('2026-07-13T12:00:00.000Z');
+
+    const settings = store.setAutoBanSettings({
+      chatId: 100,
+      enabled: true,
+      threshold: 2,
+      windowMinutes: 10,
+      durationMinutes: 30,
+      moderatorUserId: 1,
+      now,
+    });
+
+    expect(settings).toEqual(
+      expect.objectContaining({
+        changed: true,
+        settings: expect.objectContaining({
+          chatId: 100,
+          enabled: true,
+          threshold: 2,
+          windowMinutes: 10,
+          durationMinutes: 30,
+        }),
+      }),
+    );
+    expect(store.getAutoBanSettings(100, { enabled: false })).toEqual(
+      expect.objectContaining({ enabled: true, threshold: 2 }),
+    );
+
+    store.recordViolation({
+      chatId: 100,
+      userId: 200,
+      windowMinutes: 10,
+      now: new Date('2026-07-13T11:45:00.000Z'),
+    });
+    const freshHit = store.recordViolation({
+      chatId: 100,
+      userId: 200,
+      windowMinutes: 10,
+      now,
+    });
+
+    expect(freshHit.count).toBe(1);
+    expect(freshHit.timestamps).toEqual(['2026-07-13T12:00:00.000Z']);
+  });
 });
