@@ -137,6 +137,18 @@ CUSTOM_SANCTIONS_PATH=data/sanctions.sqlite
 
 После изменения `.env` перезапустите бота. Команда `/id` доступна всем, остальные команды доступны только администраторам бота.
 
+## Docker-деплой
+
+Для продакшена можно запускать бота через Docker Compose:
+
+```bash
+docker compose up -d --build
+docker compose logs -f max-moderator-bot
+docker compose restart max-moderator-bot
+```
+
+Контейнер использует `restart: unless-stopped`, поэтому поднимется после падения процесса и после перезагрузки сервера. Файл `.env` не попадает в образ, а `./data` монтируется как volume в `/app/data`; SQLite-база `data/sanctions.sqlite` остаётся на сервере между пересборками.
+
 Команды администратора:
 
 ```text

@@ -1,0 +1,10 @@
+services:
+  max-moderator-bot:
+    build: .
+    container_name: max-moderator-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
