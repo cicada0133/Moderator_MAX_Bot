@@ -294,10 +294,17 @@ function normalizeBans(value) {
 
 function normalizeAutoBanSettingsList(value) {
   if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => normalizeAutoBanSettings(item))
-    .filter(Boolean)
-    .sort((left, right) => String(left.chatId).localeCompare(String(right.chatId)));
+  const settingsByChatId = new Map();
+  for (const item of value) {
+    const normalized = normalizeAutoBanSettings(item);
+    if (normalized) {
+      settingsByChatId.set(String(normalized.chatId), normalized);
+    }
+  }
+
+  return [...settingsByChatId.values()].sort((left, right) =>
+    String(left.chatId).localeCompare(String(right.chatId)),
+  );
 }
 
 function normalizeAutoBanSettings(value = {}) {

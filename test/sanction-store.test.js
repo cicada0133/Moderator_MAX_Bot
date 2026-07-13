@@ -117,4 +117,48 @@ describe('createSanctionStore', () => {
     expect(freshHit.count).toBe(1);
     expect(freshHit.timestamps).toEqual(['2026-07-13T12:00:00.000Z']);
   });
+
+  it('keeps one auto-ban setting per chat when normalizing', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'max-sanctions-'));
+    const filePath = path.join(directory, 'sanctions.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify(
+        {
+          bans: [],
+          autoBanSettings: [
+            {
+              chatId: 100,
+              enabled: true,
+              threshold: 2,
+              windowMinutes: 5,
+              durationMinutes: 10,
+            },
+            {
+              chatId: 100,
+              enabled: true,
+              threshold: 3,
+              windowMinutes: 10,
+              durationMinutes: 30,
+            },
+          ],
+          violations: [],
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const store = createSanctionStore(filePath);
+
+    expect(store.getAutoBanSettings(100, { enabled: false })).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        threshold: 3,
+        windowMinutes: 10,
+        durationMinutes: 30,
+      }),
+    );
+  });
 });

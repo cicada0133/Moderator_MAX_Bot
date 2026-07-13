@@ -639,6 +639,7 @@ async function maybeApplyAutoBan({
     userId,
     userName,
     settings,
+    violationCount: violation.count,
   });
 
   return {
@@ -657,6 +658,7 @@ async function sendAutoBanNotice({
   userId,
   userName,
   settings,
+  violationCount,
 }) {
   if (!notify || !chatId) {
     return false;
@@ -666,10 +668,9 @@ async function sendAutoBanNotice({
   await api.sendMessageToChat(
     chatId,
     [
-      `Авто soft-ban включён: ${label}`,
-      `Причина: ${settings.threshold} нарушений за ${formatMinutesLabel(settings.windowMinutes)}.`,
-      `Срок: ${formatMinutesLabel(settings.durationMinutes)}.`,
-      'Пока ban активен, бот будет удалять сообщения пользователя в этом чате.',
+      `${label}, вы нарушили правила чата ${formatTimesLabel(violationCount || settings.threshold)} за ${formatMinutesLabel(settings.windowMinutes)}.`,
+      `На вас наложено ограничение на ${formatMinutesLabel(settings.durationMinutes)}.`,
+      'Пока ограничение активно, бот будет удалять ваши сообщения в этом чате.',
     ].join('\n'),
     { notify: false },
   );
@@ -2106,6 +2107,16 @@ function formatMinutesLabel(minutes) {
     return `${minutes} минуты`;
   }
   return `${minutes} минут`;
+}
+
+function formatTimesLabel(count) {
+  const lastDigit = count % 10;
+  const lastTwoDigits = count % 100;
+  if (lastDigit === 1 && lastTwoDigits !== 11) return `${count} раз`;
+  if ([2, 3, 4].includes(lastDigit) && ![12, 13, 14].includes(lastTwoDigits)) {
+    return `${count} раза`;
+  }
+  return `${count} раз`;
 }
 
 function formatDateTime(value) {

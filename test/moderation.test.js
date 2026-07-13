@@ -944,7 +944,9 @@ describe('createModerator', () => {
     });
     expect(api.sendMessageToChat).toHaveBeenCalledWith(
       777,
-      expect.stringContaining('Авто soft-ban включён: Павел'),
+      expect.stringContaining(
+        'Павел, вы нарушили правила чата 2 раза за 10 минут.',
+      ),
       { notify: false },
     );
   });
