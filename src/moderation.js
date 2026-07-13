@@ -553,14 +553,33 @@ function getAllAdminUserIds(adminUserIds, adminStore) {
 }
 
 function applyAdminCommand(adminStore, baseAdminUserIds, command, argument) {
-  if (command === '/addadmin') {
+  const parsedUserId = parsePositiveInteger(argument);
+
+  if (!parsedUserId) {
     return {
-      type: 'addadmin',
-      ...adminStore.addAdmin(argument),
+      changed: false,
+      reason: 'invalid-user-id',
+      type: command === '/addadmin' ? 'addadmin' : 'removeadmin',
+      userId: argument,
     };
   }
 
-  const parsedUserId = Number.parseInt(argument, 10);
+  if (command === '/addadmin') {
+    if (baseAdminUserIds.includes(parsedUserId)) {
+      return {
+        changed: false,
+        reason: 'base-admin-exists',
+        type: 'addadmin',
+        userId: parsedUserId,
+      };
+    }
+
+    return {
+      type: 'addadmin',
+      ...adminStore.addAdmin(parsedUserId),
+    };
+  }
+
   if (baseAdminUserIds.includes(parsedUserId)) {
     return {
       changed: false,
@@ -572,7 +591,7 @@ function applyAdminCommand(adminStore, baseAdminUserIds, command, argument) {
 
   return {
     type: 'removeadmin',
-    ...adminStore.removeAdmin(argument),
+    ...adminStore.removeAdmin(parsedUserId),
   };
 }
 
@@ -700,6 +719,10 @@ function formatAdminCommandResult(result) {
 
   if (!result.changed && result.reason === 'base-admin') {
     return `Администратор ${result.userId} задан в BOT_ADMIN_IDS. Его нельзя удалить командой, только через .env.`;
+  }
+
+  if (!result.changed && result.reason === 'base-admin-exists') {
+    return `Администратор ${result.userId} уже задан в BOT_ADMIN_IDS. Дополнительно добавлять его не нужно.`;
   }
 
   if (result.type === 'addadmin') {

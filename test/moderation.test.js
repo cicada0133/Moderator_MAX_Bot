@@ -161,10 +161,44 @@ describe('createModerator', () => {
     });
 
     expect(result.action).toBe('command');
-    expect(adminStore.addAdmin).toHaveBeenCalledWith('456');
+    expect(adminStore.addAdmin).toHaveBeenCalledWith(456);
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       'Администратор добавлен: 456',
+      { notify: false },
+    );
+  });
+
+  it('does not duplicate base env admins when adding admins', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+      addAdmin: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123, 456],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-admin-base-add', text: '/addadmin 456' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.addAdmin).not.toHaveBeenCalled();
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      'Администратор 456 уже задан в BOT_ADMIN_IDS. Дополнительно добавлять его не нужно.',
       { notify: false },
     );
   });
@@ -336,7 +370,7 @@ describe('createModerator', () => {
     });
 
     expect(result.action).toBe('command');
-    expect(adminStore.addAdmin).toHaveBeenCalledWith('456');
+    expect(adminStore.addAdmin).toHaveBeenCalledWith(456);
     expect(api.answerCallback).toHaveBeenCalledWith('callback-1', {
       notification: 'Администратор добавлен: 456',
       message: { text: 'Администратор добавлен: 456' },
