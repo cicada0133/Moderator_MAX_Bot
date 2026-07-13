@@ -207,6 +207,39 @@ describe('createModerator', () => {
     );
   });
 
+  it('shows grouped help for admins', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-help', text: '/help' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('Soft-ban в текущем чате\n  /ban user_id 30m'),
+      { notify: false },
+    );
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('Администраторы бота\n  /admins'),
+      { notify: false },
+    );
+  });
+
   it('lets configured admins add runtime admins', async () => {
     const api = {
       deleteMessage: vi.fn(),

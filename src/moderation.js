@@ -583,23 +583,7 @@ async function maybeHandleCommand({
       api,
       chatId,
       userId,
-      text: [
-        'Команды модератора:',
-        '/id - показать ваш user_id',
-        '/badwords - показать пользовательский словарь',
-        '/banword слово - добавить слово или фрагмент в банлист',
-        '/unbanword слово - удалить из банлиста',
-        '/allowword слово - добавить исключение',
-        '/unallowword слово - удалить исключение',
-        '/admins - показать администраторов бота',
-        '/addadmin user_id - добавить администратора бота',
-        '/removeadmin user_id - удалить runtime-администратора',
-        '/ban user_id 30m|1d|7d|forever - soft-ban в этом чате',
-        '/unban user_id - снять soft-ban в этом чате',
-        '/bans - показать активные soft-ban в этом чате',
-        'Можно отправить контакт пользователя: бот покажет user_id и кнопки для админки.',
-        'В ЛС бот отвечает только администраторам. Для остальных доступна только /id.',
-      ].join('\n'),
+      text: formatHelpMessage(),
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -1188,6 +1172,42 @@ function formatAdminCommandResult(result, adminStore, { links = false } = {}) {
   }
 
   return `Администратор удалён из runtime-списка: ${userLabel}`;
+}
+
+function formatHelpMessage() {
+  return [
+    'Команды модератора',
+    '',
+    'Быстро',
+    '  /id — показать ваш user_id',
+    '  /help — показать это меню',
+    '',
+    'Словарь',
+    '  /badwords — показать пользовательский словарь',
+    '  /banword слово — добавить слово или фрагмент в банлист',
+    '  /unbanword слово — удалить из банлиста',
+    '  /allowword слово — добавить исключение',
+    '  /unallowword слово — удалить исключение',
+    '',
+    'Администраторы бота',
+    '  /admins — показать администраторов',
+    '  /addadmin user_id — добавить администратора',
+    '  /removeadmin user_id — удалить runtime-администратора',
+    '',
+    'Soft-ban в текущем чате',
+    '  /ban user_id 30m — бан на 30 минут',
+    '  /ban user_id 1d — бан на 1 день',
+    '  /ban user_id 7d — бан на 7 дней',
+    '  /ban user_id forever — бан до снятия',
+    '  /unban user_id — снять soft-ban',
+    '  /bans — показать активные soft-ban',
+    '',
+    'Через контакт',
+    '  Отправьте контакт пользователя в нужную группу.',
+    '  Бот покажет user_id, админ-кнопки и кнопки soft-ban.',
+    '',
+    'В ЛС бот отвечает только администраторам. Для остальных доступна только /id.',
+  ].join('\n');
 }
 
 function formatAdminsMessage(baseAdminUserIds, adminStore, { links = false } = {}) {
