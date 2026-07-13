@@ -37,12 +37,14 @@ export function createModerator({
     const message = update.message;
     const text = message?.body?.text;
     const messageId = message?.body?.mid;
-    const chatId = message?.recipient?.chat_id;
+    const recipient = message?.recipient || {};
+    const chatId = recipient.chat_id;
     const sender = message?.sender;
     const userId = message?.sender?.user_id;
     const userName = getUserDisplayName(sender);
     const username = sender?.username ? `@${sender.username}` : '';
-    const isDirectMessage = !chatId;
+    const isGroupChat = isGroupChatRecipient(recipient);
+    const isDirectMessage = !isGroupChat;
     const senderIsAdmin = isAdmin(userId, adminUserIds, adminStore);
 
     if (message?.sender?.is_bot) {
@@ -122,6 +124,7 @@ export function createModerator({
       api,
       message,
       chatId,
+      sanctionChatId: isGroupChat ? chatId : null,
       userId,
       adminStore,
       sanctionStore,
@@ -147,6 +150,7 @@ export function createModerator({
       message,
       text,
       chatId,
+      isGroupChat,
       userId,
       dictionaryStore,
       adminStore,
@@ -289,6 +293,7 @@ async function handleCallbackUpdate({
   if (parsedPayload.kind === 'sanction') {
     return handleSanctionCallback({
       api,
+      update,
       callbackId,
       parsedPayload,
       sanctionStore,
@@ -353,6 +358,7 @@ async function handleCallbackUpdate({
 
 async function handleSanctionCallback({
   api,
+  update,
   callbackId,
   parsedPayload,
   sanctionStore,
@@ -360,6 +366,24 @@ async function handleSanctionCallback({
   adminUserIds,
   userId,
 }) {
+  const callbackRecipient = getCallbackRecipient(update);
+  if (callbackRecipient && !isGroupChatRecipient(callbackRecipient)) {
+    await answerCallback(
+      api,
+      callbackId,
+      'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
+      {
+        updateMessage: true,
+      },
+    );
+    return {
+      action: 'command',
+      command: `callback:sanction:${parsedPayload.action}`,
+      userId,
+      noticeSent: true,
+    };
+  }
+
   if (!sanctionStore) {
     await answerCallback(api, callbackId, 'Хранилище санкций не подключено.');
     return {
@@ -534,11 +558,50 @@ function getUserProfileFromSender(sender = {}) {
   };
 }
 
+function isGroupChatRecipient(recipient = {}) {
+  const chatType = normalizeRecipientChatType(recipient);
+  if (['dialog', 'private', 'direct', 'user'].includes(chatType)) {
+    return false;
+  }
+
+  if (['chat', 'group', 'supergroup', 'channel'].includes(chatType)) {
+    return true;
+  }
+
+  if (recipient.user_id || recipient.userId) {
+    return false;
+  }
+
+  return Boolean(recipient.chat_id ?? recipient.chatId);
+}
+
+function normalizeRecipientChatType(recipient = {}) {
+  return String(
+    recipient.chat_type ??
+      recipient.chatType ??
+      recipient.type ??
+      recipient.chat?.type ??
+      '',
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function getCallbackRecipient(update = {}) {
+  return (
+    update.callback?.message?.recipient ??
+    update.callback?.recipient ??
+    update.message?.recipient ??
+    null
+  );
+}
+
 async function maybeHandleCommand({
   api,
   message,
   text,
   chatId,
+  isGroupChat = false,
   userId,
   dictionaryStore,
   adminStore,
@@ -646,6 +709,7 @@ async function maybeHandleCommand({
       argument,
       message,
       chatId,
+      isGroupChat,
       userId,
       sanctionStore,
       adminStore,
@@ -733,17 +797,18 @@ async function maybeHandleSanctionCommand({
   argument,
   message,
   chatId,
+  isGroupChat,
   userId,
   sanctionStore,
   adminStore,
   adminUserIds,
 }) {
-  if (!chatId) {
+  if (!isGroupChat || !chatId) {
     await sendReply({
       api,
       chatId,
       userId,
-      text: 'Soft-ban работает по конкретному чату. Используйте команду в нужной группе.',
+      text: 'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
     });
     return { noticeSent: true };
   }
@@ -856,6 +921,7 @@ async function maybeHandleContactAdminCandidate({
   api,
   message,
   chatId,
+  sanctionChatId,
   userId,
   adminStore,
   adminUserIds,
@@ -918,10 +984,13 @@ async function maybeHandleContactAdminCandidate({
     api,
     chatId,
     userId,
-    text: formatContactAdminMessage(contact, { links: true, chatId }),
+    text: formatContactAdminMessage(contact, {
+      links: true,
+      chatId: sanctionChatId,
+    }),
     extra: {
       format: 'markdown',
-      attachments: [buildContactActionKeyboard(contact.userId, chatId)],
+      attachments: [buildContactActionKeyboard(contact.userId, sanctionChatId)],
     },
   });
 

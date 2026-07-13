@@ -574,6 +574,39 @@ describe('createModerator', () => {
     });
   });
 
+  it('does not create soft bans from direct dialog commands with chat id', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const sanctionStore = {
+      setBan: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      sanctionStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: 2757858, chat_type: 'dialog' },
+        body: { mid: 'mid-dialog-ban-command', text: '/ban 456 30' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(sanctionStore.setBan).not.toHaveBeenCalled();
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      2757858,
+      'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
+      { notify: false },
+    );
+  });
+
   it('does not let admins soft-ban bot admins through commands', async () => {
     const api = {
       deleteMessage: vi.fn(),
@@ -767,6 +800,58 @@ describe('createModerator', () => {
           }),
         ],
       }),
+    );
+  });
+
+  it('does not offer soft-ban menu for contacts in direct dialogs', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({ adminUserIds: [] })),
+      upsertKnownUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, is_bot: false },
+        recipient: { chat_id: 2757858, chat_type: 'dialog' },
+        body: {
+          mid: 'mid-dialog-contact',
+          attachments: [
+            {
+              type: 'contact',
+              payload: {
+                max_info: {
+                  user_id: 456,
+                  name: 'Павел',
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    const replyOptions = api.sendMessageToChat.mock.calls[0][2];
+    expect(api.sendMessageToChat).toHaveBeenCalledWith(
+      2757858,
+      expect.stringContaining(
+        'Soft-ban работает по конкретному чату. Для бана отправьте контакт в нужной группе.',
+      ),
+      expect.any(Object),
+    );
+    expect(JSON.stringify(replyOptions.attachments)).not.toContain(
+      'sanction:menu',
     );
   });
 
@@ -965,6 +1050,54 @@ describe('createModerator', () => {
           text: expect.stringContaining('Soft-ban включён'),
         }),
       }),
+    );
+  });
+
+  it('rejects soft-ban callback buttons from direct dialogs', async () => {
+    const api = {
+      answerCallback: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({
+        adminUserIds: [],
+        knownUsers: {
+          456: { userId: 456, name: 'Павел' },
+        },
+      })),
+    };
+    const sanctionStore = {
+      setBan: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      sanctionStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-dialog-soft-ban',
+        payload: 'sanction:ban:2757858:456:30m',
+        user: { user_id: 123 },
+        message: {
+          recipient: { chat_id: 2757858, chat_type: 'dialog' },
+        },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(sanctionStore.setBan).not.toHaveBeenCalled();
+    expect(api.answerCallback).toHaveBeenCalledWith(
+      'callback-dialog-soft-ban',
+      {
+        notification:
+          'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
+        message: {
+          text: 'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
+        },
+      },
     );
   });
 
