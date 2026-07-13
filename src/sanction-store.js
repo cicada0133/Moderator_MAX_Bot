@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import Database from 'better-sqlite3';
+
 const EMPTY_SANCTIONS = {
   bans: [],
   autoBanSettings: [],
@@ -8,26 +10,67 @@ const EMPTY_SANCTIONS = {
 };
 
 export function createSanctionStore(filePath) {
-  const absolutePath = path.resolve(filePath);
+  const { dbPath, legacyJsonPath } = resolveStorePaths(filePath);
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  initializeSchema(db);
+  migrateLegacyJsonIfNeeded(db, legacyJsonPath);
 
   function listActiveBans(chatId, { now = new Date() } = {}) {
-    const sanctions = readSanctions();
-    return sanctions.bans
-      .filter((ban) => String(ban.chatId) === String(chatId))
-      .filter((ban) => isActiveBan(ban, now))
-      .sort(compareBans);
+    const rows = db
+      .prepare(
+        `
+        SELECT *
+        FROM bans
+        WHERE chat_id = @chatId
+          AND lifted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > @now)
+        ORDER BY
+          CASE WHEN expires_at IS NULL THEN 1 ELSE 0 END,
+          expires_at ASC,
+          user_id ASC
+        `,
+      )
+      .all({
+        chatId: normalizeChatId(chatId),
+        now: now.toISOString(),
+      });
+
+    return rows.map(rowToBan);
   }
 
   function getActiveBan({ chatId, userId, now = new Date() }) {
-    const sanctions = readSanctions();
-    return (
-      sanctions.bans.find(
-        (ban) =>
-          String(ban.chatId) === String(chatId) &&
-          ban.userId === parseUserId(userId) &&
-          isActiveBan(ban, now),
-      ) || null
-    );
+    const parsedUserId = parseUserId(userId);
+    if (!chatId || !parsedUserId) {
+      return null;
+    }
+
+    const row = db
+      .prepare(
+        `
+        SELECT *
+        FROM bans
+        WHERE chat_id = @chatId
+          AND user_id = @userId
+          AND lifted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > @now)
+        ORDER BY
+          CASE WHEN expires_at IS NULL THEN 1 ELSE 0 END,
+          expires_at ASC,
+          id ASC
+        LIMIT 1
+        `,
+      )
+      .get({
+        chatId: normalizeChatId(chatId),
+        userId: parsedUserId,
+        now: now.toISOString(),
+      });
+
+    return row ? rowToBan(row) : null;
   }
 
   function setBan({
@@ -50,28 +93,84 @@ export function createSanctionStore(filePath) {
       return { changed: false, reason: 'invalid-ban-input' };
     }
 
-    const sanctions = readSanctions();
-    const existing = sanctions.bans.find(
-      (ban) =>
-        String(ban.chatId) === String(normalized.chatId) &&
-        ban.userId === normalized.userId &&
-        isActiveBan(ban, now),
-    );
+    const existing = db
+      .prepare(
+        `
+        SELECT *
+        FROM bans
+        WHERE chat_id = @chatId
+          AND user_id = @userId
+          AND lifted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > @now)
+        ORDER BY id ASC
+        LIMIT 1
+        `,
+      )
+      .get({
+        chatId: normalizeChatId(normalized.chatId),
+        userId: normalized.userId,
+        now: now.toISOString(),
+      });
 
     if (existing) {
-      existing.createdAt = normalized.createdAt;
-      existing.expiresAt = normalized.expiresAt;
-      existing.moderatorUserId = normalized.moderatorUserId;
-      existing.reason = normalized.reason;
-      existing.liftedAt = null;
-      existing.liftedByUserId = null;
-      writeSanctions(sanctions);
-      return { changed: true, action: 'updated', ban: existing };
+      db.prepare(
+        `
+        UPDATE bans
+        SET created_at = @createdAt,
+            expires_at = @expiresAt,
+            moderator_user_id = @moderatorUserId,
+            reason = @reason,
+            lifted_at = NULL,
+            lifted_by_user_id = NULL
+        WHERE id = @id
+        `,
+      ).run({
+        id: existing.id,
+        createdAt: normalized.createdAt,
+        expiresAt: normalized.expiresAt,
+        moderatorUserId: normalized.moderatorUserId,
+        reason: normalized.reason,
+      });
+
+      return {
+        changed: true,
+        action: 'updated',
+        ban: rowToBan({ ...existing, ...banToRow(normalized), id: existing.id }),
+      };
     }
 
-    sanctions.bans.push(normalized);
-    writeSanctions(sanctions);
-    return { changed: true, action: 'created', ban: normalized };
+    const info = db
+      .prepare(
+        `
+        INSERT INTO bans (
+          chat_id,
+          user_id,
+          moderator_user_id,
+          reason,
+          created_at,
+          expires_at,
+          lifted_at,
+          lifted_by_user_id
+        )
+        VALUES (
+          @chatId,
+          @userId,
+          @moderatorUserId,
+          @reason,
+          @createdAt,
+          @expiresAt,
+          @liftedAt,
+          @liftedByUserId
+        )
+        `,
+      )
+      .run(banToRow(normalized));
+
+    return {
+      changed: true,
+      action: 'created',
+      ban: { ...normalized, id: Number(info.lastInsertRowid) },
+    };
   }
 
   function liftBan({ chatId, userId, moderatorUserId, now = new Date() }) {
@@ -80,29 +179,59 @@ export function createSanctionStore(filePath) {
       return { changed: false, reason: 'invalid-ban-input', userId };
     }
 
-    const sanctions = readSanctions();
-    const ban = sanctions.bans.find(
-      (item) =>
-        String(item.chatId) === String(chatId) &&
-        item.userId === parsedUserId &&
-        isActiveBan(item, now),
-    );
+    const row = db
+      .prepare(
+        `
+        SELECT *
+        FROM bans
+        WHERE chat_id = @chatId
+          AND user_id = @userId
+          AND lifted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > @now)
+        ORDER BY id ASC
+        LIMIT 1
+        `,
+      )
+      .get({
+        chatId: normalizeChatId(chatId),
+        userId: parsedUserId,
+        now: now.toISOString(),
+      });
 
-    if (!ban) {
+    if (!row) {
       return { changed: false, reason: 'not-found', userId: parsedUserId };
     }
 
-    ban.liftedAt = now.toISOString();
-    ban.liftedByUserId = parseUserId(moderatorUserId);
-    writeSanctions(sanctions);
-    return { changed: true, ban };
+    const liftedAt = now.toISOString();
+    const liftedByUserId = parseUserId(moderatorUserId);
+    db.prepare(
+      `
+      UPDATE bans
+      SET lifted_at = @liftedAt,
+          lifted_by_user_id = @liftedByUserId
+      WHERE id = @id
+      `,
+    ).run({
+      id: row.id,
+      liftedAt,
+      liftedByUserId,
+    });
+
+    return {
+      changed: true,
+      ban: rowToBan({
+        ...row,
+        lifted_at: liftedAt,
+        lifted_by_user_id: liftedByUserId,
+      }),
+    };
   }
 
   function getAutoBanSettings(chatId, defaults = {}) {
-    const sanctions = readSanctions();
-    const stored = sanctions.autoBanSettings.find(
-      (item) => String(item.chatId) === String(chatId),
-    );
+    const row = db
+      .prepare('SELECT * FROM auto_ban_settings WHERE chat_id = ?')
+      .get(normalizeChatId(chatId));
+    const stored = row ? rowToAutoBanSettings(row) : {};
 
     return normalizeAutoBanSettings({ ...defaults, ...stored, chatId });
   }
@@ -129,17 +258,36 @@ export function createSanctionStore(filePath) {
       return { changed: false, reason: 'invalid-auto-ban-settings' };
     }
 
-    const sanctions = readSanctions();
-    const existing = sanctions.autoBanSettings.find(
-      (item) => String(item.chatId) === String(normalized.chatId),
-    );
-    if (existing) {
-      Object.assign(existing, normalized);
-    } else {
-      sanctions.autoBanSettings.push(normalized);
-    }
+    db.prepare(
+      `
+      INSERT INTO auto_ban_settings (
+        chat_id,
+        enabled,
+        threshold,
+        window_minutes,
+        duration_minutes,
+        updated_at,
+        updated_by_user_id
+      )
+      VALUES (
+        @chatId,
+        @enabled,
+        @threshold,
+        @windowMinutes,
+        @durationMinutes,
+        @updatedAt,
+        @updatedByUserId
+      )
+      ON CONFLICT(chat_id) DO UPDATE SET
+        enabled = excluded.enabled,
+        threshold = excluded.threshold,
+        window_minutes = excluded.window_minutes,
+        duration_minutes = excluded.duration_minutes,
+        updated_at = excluded.updated_at,
+        updated_by_user_id = excluded.updated_by_user_id
+      `,
+    ).run(autoBanSettingsToRow(normalized));
 
-    writeSanctions(sanctions);
     return { changed: true, settings: normalized };
   }
 
@@ -155,36 +303,63 @@ export function createSanctionStore(filePath) {
       return { changed: false, reason: 'invalid-violation-input' };
     }
 
-    const sanctions = readSanctions();
-    const cutoffMs = now.getTime() - normalizedWindowMinutes * 60 * 1000;
-    let record = sanctions.violations.find(
-      (item) =>
-        String(item.chatId) === String(chatId) && item.userId === parsedUserId,
-    );
-    if (!record) {
-      record = {
-        chatId,
+    const normalizedChatId = normalizeChatId(chatId);
+    const cutoff = new Date(
+      now.getTime() - normalizedWindowMinutes * 60 * 1000,
+    ).toISOString();
+    const createdAt = now.toISOString();
+
+    const result = db.transaction(() => {
+      db.prepare(
+        `
+        DELETE FROM violations
+        WHERE chat_id = @chatId
+          AND user_id = @userId
+          AND created_at < @cutoff
+        `,
+      ).run({
+        chatId: normalizedChatId,
         userId: parsedUserId,
-        timestamps: [],
-        updatedAt: now.toISOString(),
-      };
-      sanctions.violations.push(record);
-    }
+        cutoff,
+      });
+      db.prepare(
+        `
+        INSERT INTO violations (chat_id, user_id, created_at)
+        VALUES (@chatId, @userId, @createdAt)
+        `,
+      ).run({
+        chatId: normalizedChatId,
+        userId: parsedUserId,
+        createdAt,
+      });
 
-    record.timestamps = record.timestamps
-      .map((value) => normalizeDate(value))
-      .filter(Boolean)
-      .filter((value) => new Date(value).getTime() >= cutoffMs);
-    record.timestamps.push(now.toISOString());
-    record.updatedAt = now.toISOString();
+      const timestamps = db
+        .prepare(
+          `
+          SELECT created_at
+          FROM violations
+          WHERE chat_id = @chatId
+            AND user_id = @userId
+            AND created_at >= @cutoff
+          ORDER BY created_at ASC
+          `,
+        )
+        .all({
+          chatId: normalizedChatId,
+          userId: parsedUserId,
+          cutoff,
+        })
+        .map((row) => row.created_at);
 
-    writeSanctions(sanctions);
+      return timestamps;
+    })();
+
     return {
       changed: true,
       chatId,
       userId: parsedUserId,
-      count: record.timestamps.length,
-      timestamps: record.timestamps,
+      count: result.length,
+      timestamps: result,
     };
   }
 
@@ -194,53 +369,29 @@ export function createSanctionStore(filePath) {
       return { changed: false, reason: 'invalid-violation-input' };
     }
 
-    const sanctions = readSanctions();
-    const before = sanctions.violations.length;
-    sanctions.violations = sanctions.violations.filter(
-      (item) =>
-        !(
-          String(item.chatId) === String(chatId) &&
-          item.userId === parsedUserId
-        ),
-    );
+    const info = db
+      .prepare(
+        `
+        DELETE FROM violations
+        WHERE chat_id = @chatId
+          AND user_id = @userId
+        `,
+      )
+      .run({
+        chatId: normalizeChatId(chatId),
+        userId: parsedUserId,
+      });
 
-    if (sanctions.violations.length === before) {
+    if (!info.changes) {
       return { changed: false, reason: 'not-found' };
     }
 
-    writeSanctions(sanctions);
     return { changed: true };
   }
 
-  function readSanctions() {
-    ensureFile();
-    const content = fs.readFileSync(absolutePath, 'utf8');
-    const parsed = JSON.parse(content || '{}');
-
-    return {
-      bans: normalizeBans(parsed.bans),
-      autoBanSettings: normalizeAutoBanSettingsList(parsed.autoBanSettings),
-      violations: normalizeViolations(parsed.violations),
-    };
-  }
-
-  function writeSanctions(sanctions) {
-    fs.writeFileSync(
-      absolutePath,
-      `${JSON.stringify(sanctions, null, 2)}\n`,
-      'utf8',
-    );
-  }
-
-  function ensureFile() {
-    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-    if (!fs.existsSync(absolutePath)) {
-      writeSanctions(EMPTY_SANCTIONS);
-    }
-  }
-
   return {
-    filePath: absolutePath,
+    filePath: dbPath,
+    legacyJsonPath,
     listActiveBans,
     getActiveBan,
     setBan,
@@ -249,7 +400,172 @@ export function createSanctionStore(filePath) {
     setAutoBanSettings,
     recordViolation,
     clearViolations,
+    close: () => db.close(),
   };
+}
+
+function resolveStorePaths(filePath) {
+  const absolutePath = path.resolve(filePath);
+  const parsed = path.parse(absolutePath);
+
+  if (parsed.ext.toLowerCase() === '.json') {
+    return {
+      dbPath: path.join(parsed.dir, `${parsed.name}.sqlite`),
+      legacyJsonPath: absolutePath,
+    };
+  }
+
+  return {
+    dbPath: absolutePath,
+    legacyJsonPath: path.join(parsed.dir, `${parsed.name}.json`),
+  };
+}
+
+function initializeSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      moderator_user_id INTEGER,
+      reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      lifted_at TEXT,
+      lifted_by_user_id INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bans_active
+      ON bans (chat_id, user_id, lifted_at, expires_at);
+
+    CREATE TABLE IF NOT EXISTS auto_ban_settings (
+      chat_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL,
+      threshold INTEGER NOT NULL,
+      window_minutes INTEGER NOT NULL,
+      duration_minutes INTEGER NOT NULL,
+      updated_at TEXT,
+      updated_by_user_id INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS violations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_violations_lookup
+      ON violations (chat_id, user_id, created_at);
+  `);
+}
+
+function migrateLegacyJsonIfNeeded(db, legacyJsonPath) {
+  if (!legacyJsonPath || !fs.existsSync(legacyJsonPath)) {
+    return;
+  }
+
+  const hasData =
+    db.prepare('SELECT COUNT(*) AS count FROM bans').get().count > 0 ||
+    db.prepare('SELECT COUNT(*) AS count FROM auto_ban_settings').get().count >
+      0 ||
+    db.prepare('SELECT COUNT(*) AS count FROM violations').get().count > 0;
+  if (hasData) {
+    return;
+  }
+
+  const parsed = readLegacySanctions(legacyJsonPath);
+  const bans = normalizeBans(parsed.bans);
+  const autoBanSettings = normalizeAutoBanSettingsList(parsed.autoBanSettings);
+  const violations = normalizeViolations(parsed.violations);
+
+  db.transaction(() => {
+    const insertBan = db.prepare(
+      `
+      INSERT INTO bans (
+        chat_id,
+        user_id,
+        moderator_user_id,
+        reason,
+        created_at,
+        expires_at,
+        lifted_at,
+        lifted_by_user_id
+      )
+      VALUES (
+        @chatId,
+        @userId,
+        @moderatorUserId,
+        @reason,
+        @createdAt,
+        @expiresAt,
+        @liftedAt,
+        @liftedByUserId
+      )
+      `,
+    );
+    for (const ban of bans) {
+      insertBan.run(banToRow(ban));
+    }
+
+    const upsertSettings = db.prepare(
+      `
+      INSERT INTO auto_ban_settings (
+        chat_id,
+        enabled,
+        threshold,
+        window_minutes,
+        duration_minutes,
+        updated_at,
+        updated_by_user_id
+      )
+      VALUES (
+        @chatId,
+        @enabled,
+        @threshold,
+        @windowMinutes,
+        @durationMinutes,
+        @updatedAt,
+        @updatedByUserId
+      )
+      ON CONFLICT(chat_id) DO UPDATE SET
+        enabled = excluded.enabled,
+        threshold = excluded.threshold,
+        window_minutes = excluded.window_minutes,
+        duration_minutes = excluded.duration_minutes,
+        updated_at = excluded.updated_at,
+        updated_by_user_id = excluded.updated_by_user_id
+      `,
+    );
+    for (const settings of autoBanSettings) {
+      upsertSettings.run(autoBanSettingsToRow(settings));
+    }
+
+    const insertViolation = db.prepare(
+      `
+      INSERT INTO violations (chat_id, user_id, created_at)
+      VALUES (@chatId, @userId, @createdAt)
+      `,
+    );
+    for (const violation of violations) {
+      for (const timestamp of violation.timestamps) {
+        insertViolation.run({
+          chatId: normalizeChatId(violation.chatId),
+          userId: violation.userId,
+          createdAt: timestamp,
+        });
+      }
+    }
+  })();
+}
+
+function readLegacySanctions(legacyJsonPath) {
+  try {
+    const content = fs.readFileSync(legacyJsonPath, 'utf8');
+    return JSON.parse(content || '{}');
+  } catch {
+    return EMPTY_SANCTIONS;
+  }
 }
 
 function normalizeBanInput({
@@ -374,10 +690,55 @@ function normalizeBan(value = {}) {
   };
 }
 
-function isActiveBan(ban, now = new Date()) {
-  if (!ban || ban.liftedAt) return false;
-  if (!ban.expiresAt) return true;
-  return new Date(ban.expiresAt).getTime() > now.getTime();
+function rowToBan(row) {
+  return {
+    id: row.id,
+    chatId: parseChatId(row.chat_id),
+    userId: row.user_id,
+    moderatorUserId: row.moderator_user_id,
+    reason: normalizeText(row.reason),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    liftedAt: row.lifted_at,
+    liftedByUserId: row.lifted_by_user_id,
+  };
+}
+
+function banToRow(ban) {
+  return {
+    chatId: normalizeChatId(ban.chatId),
+    userId: ban.userId,
+    moderatorUserId: ban.moderatorUserId,
+    reason: ban.reason,
+    createdAt: ban.createdAt,
+    expiresAt: ban.expiresAt,
+    liftedAt: ban.liftedAt,
+    liftedByUserId: ban.liftedByUserId,
+  };
+}
+
+function rowToAutoBanSettings(row) {
+  return {
+    chatId: parseChatId(row.chat_id),
+    enabled: Boolean(row.enabled),
+    threshold: row.threshold,
+    windowMinutes: row.window_minutes,
+    durationMinutes: row.duration_minutes,
+    updatedAt: row.updated_at,
+    updatedByUserId: row.updated_by_user_id,
+  };
+}
+
+function autoBanSettingsToRow(settings) {
+  return {
+    chatId: normalizeChatId(settings.chatId),
+    enabled: settings.enabled ? 1 : 0,
+    threshold: settings.threshold,
+    windowMinutes: settings.windowMinutes,
+    durationMinutes: settings.durationMinutes,
+    updatedAt: settings.updatedAt,
+    updatedByUserId: settings.updatedByUserId,
+  };
 }
 
 function compareBans(left, right) {
@@ -393,6 +754,22 @@ function compareViolations(left, right) {
     String(left.chatId).localeCompare(String(right.chatId)) ||
     left.userId - right.userId
   );
+}
+
+function normalizeChatId(value) {
+  return String(value ?? '').trim();
+}
+
+function parseChatId(value) {
+  const normalized = normalizeChatId(value);
+  if (/^-?\d+$/u.test(normalized)) {
+    const parsed = Number.parseInt(normalized, 10);
+    if (Number.isSafeInteger(parsed)) {
+      return parsed;
+    }
+  }
+
+  return normalized;
 }
 
 function parseUserId(value) {

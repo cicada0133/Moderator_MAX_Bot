@@ -132,7 +132,7 @@ ALLOW_WORDS=слово1,слово2
 BOT_ADMIN_IDS=123456789
 CUSTOM_DICTIONARY_PATH=data/custom-dictionary.json
 CUSTOM_ADMINS_PATH=data/admins.json
-CUSTOM_SANCTIONS_PATH=data/sanctions.json
+CUSTOM_SANCTIONS_PATH=data/sanctions.sqlite
 ```
 
 После изменения `.env` перезапустите бота. Команда `/id` доступна всем, остальные команды доступны только администраторам бота.
@@ -183,7 +183,9 @@ CUSTOM_SANCTIONS_PATH=data/sanctions.json
 
 ## Soft-ban
 
-Soft-ban не удаляет пользователя из чата и не запрещает ему писать средствами MAX. Бот просто хранит временную санкцию и автоматически удаляет новые сообщения пользователя, пока ban активен.
+Soft-ban не удаляет пользователя из чата и не запрещает ему писать средствами MAX. Бот хранит временную санкцию в SQLite-базе `data/sanctions.sqlite` и автоматически удаляет новые сообщения пользователя, пока ban активен.
+
+Если рядом есть старый файл `data/sanctions.json`, бот при первом старте перенесёт из него историю ban, настройки auto-ban и счётчики нарушений в SQLite.
 
 Жёсткий бан администратор делает вручную в MAX: блокирует пользователя или исключает его из группы.
 

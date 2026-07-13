@@ -125,7 +125,16 @@ describe('createSanctionStore', () => {
       filePath,
       JSON.stringify(
         {
-          bans: [],
+          bans: [
+            {
+              chatId: 100,
+              userId: 200,
+              moderatorUserId: 1,
+              reason: 'legacy-json',
+              createdAt: '2026-07-13T12:00:00.000Z',
+              expiresAt: '2026-07-13T12:30:00.000Z',
+            },
+          ],
           autoBanSettings: [
             {
               chatId: 100,
@@ -142,7 +151,13 @@ describe('createSanctionStore', () => {
               durationMinutes: 30,
             },
           ],
-          violations: [],
+          violations: [
+            {
+              chatId: 100,
+              userId: 200,
+              timestamps: ['2026-07-13T12:01:00.000Z'],
+            },
+          ],
         },
         null,
         2,
@@ -152,12 +167,43 @@ describe('createSanctionStore', () => {
 
     const store = createSanctionStore(filePath);
 
+    expect(path.basename(store.filePath)).toBe('sanctions.sqlite');
+    expect(fs.existsSync(store.filePath)).toBe(true);
+    expect(
+      store.getActiveBan({
+        chatId: 100,
+        userId: 200,
+        now: new Date('2026-07-13T12:05:00.000Z'),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        chatId: 100,
+        userId: 200,
+        reason: 'legacy-json',
+      }),
+    );
     expect(store.getAutoBanSettings(100, { enabled: false })).toEqual(
       expect.objectContaining({
         enabled: true,
         threshold: 3,
         windowMinutes: 10,
         durationMinutes: 30,
+      }),
+    );
+    expect(
+      store.recordViolation({
+        chatId: 100,
+        userId: 200,
+        windowMinutes: 10,
+        now: new Date('2026-07-13T12:02:00.000Z'),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        count: 2,
+        timestamps: [
+          '2026-07-13T12:01:00.000Z',
+          '2026-07-13T12:02:00.000Z',
+        ],
       }),
     );
   });

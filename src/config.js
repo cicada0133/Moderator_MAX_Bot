@@ -18,7 +18,7 @@ export function loadConfig(env = process.env) {
     customDictionaryPath:
       env.CUSTOM_DICTIONARY_PATH || 'data/custom-dictionary.json',
     customAdminsPath: env.CUSTOM_ADMINS_PATH || 'data/admins.json',
-    customSanctionsPath: env.CUSTOM_SANCTIONS_PATH || 'data/sanctions.json',
+    customSanctionsPath: env.CUSTOM_SANCTIONS_PATH || 'data/sanctions.sqlite',
     autoBanDefaults: {
       enabled: parseBoolean(env.AUTO_BAN_ENABLED, false),
       threshold: parsePositiveInteger(env.AUTO_BAN_THRESHOLD, 3),
