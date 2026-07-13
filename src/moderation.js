@@ -1,5 +1,12 @@
 import { findProfanity, getBuiltInBadWordsCount } from './profanity.js';
 
+const BAN_DURATIONS = {
+  '30m': { label: '30 минут', durationMs: 30 * 60 * 1000 },
+  '1d': { label: '1 день', durationMs: 24 * 60 * 60 * 1000 },
+  '7d': { label: '7 дней', durationMs: 7 * 24 * 60 * 60 * 1000 },
+  forever: { label: 'навсегда', durationMs: null },
+};
+
 export function createModerator({
   api,
   dryRun = false,
@@ -9,6 +16,7 @@ export function createModerator({
   allowWords = [],
   dictionaryStore = null,
   adminStore = null,
+  sanctionStore = null,
   adminUserIds = [],
 }) {
   async function handleUpdate(update) {
@@ -17,6 +25,7 @@ export function createModerator({
         api,
         update,
         adminStore,
+        sanctionStore,
         adminUserIds,
       });
     }
@@ -52,6 +61,7 @@ export function createModerator({
         userId,
         dictionaryStore,
         adminStore,
+        sanctionStore,
         adminUserIds,
         isDirectMessage,
       });
@@ -75,12 +85,45 @@ export function createModerator({
       };
     }
 
+    if (!isDirectMessage && !senderIsAdmin && messageId && sanctionStore) {
+      const activeBan = sanctionStore.getActiveBan({ chatId, userId });
+      if (activeBan) {
+        if (dryRun) {
+          return {
+            action: 'would-delete',
+            messageId,
+            chatId,
+            userId,
+            userName,
+            username,
+            reason: 'soft-ban',
+            token: '',
+            noticeSent: false,
+          };
+        }
+
+        await api.deleteMessage(messageId);
+        return {
+          action: 'soft-ban-delete',
+          messageId,
+          chatId,
+          userId,
+          userName,
+          username,
+          reason: 'soft-ban',
+          ban: activeBan,
+          noticeSent: false,
+        };
+      }
+    }
+
     const contactResult = await maybeHandleContactAdminCandidate({
       api,
       message,
       chatId,
       userId,
       adminStore,
+      sanctionStore,
       adminUserIds,
     });
     if (contactResult.handled) {
@@ -105,6 +148,7 @@ export function createModerator({
       userId,
       dictionaryStore,
       adminStore,
+      sanctionStore,
       adminUserIds,
       isDirectMessage,
     });
@@ -198,11 +242,17 @@ export function createModerator({
   return { handleUpdate };
 }
 
-async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
+async function handleCallbackUpdate({
+  api,
+  update,
+  adminStore,
+  sanctionStore,
+  adminUserIds,
+}) {
   const callback = update.callback;
   const callbackId = callback?.callback_id;
   const payload = callback?.payload;
-  const parsedPayload = parseAdminCallbackPayload(payload);
+  const parsedPayload = parseCallbackPayload(payload);
   const userId = getCallbackUserId(update);
 
   if (!parsedPayload) {
@@ -228,10 +278,22 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
     );
     return {
       action: 'command',
-      command: `callback:${parsedPayload.action}`,
+      command: `callback:${parsedPayload.kind}:${parsedPayload.action}`,
       userId,
       noticeSent: true,
     };
+  }
+
+  if (parsedPayload.kind === 'sanction') {
+    return handleSanctionCallback({
+      api,
+      callbackId,
+      parsedPayload,
+      sanctionStore,
+      adminStore,
+      adminUserIds,
+      userId,
+    });
   }
 
   if (parsedPayload.action === 'list') {
@@ -282,6 +344,79 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
   return {
     action: 'command',
     command: `callback:${parsedPayload.action}`,
+    userId,
+    noticeSent: true,
+  };
+}
+
+async function handleSanctionCallback({
+  api,
+  callbackId,
+  parsedPayload,
+  sanctionStore,
+  adminStore,
+  adminUserIds,
+  userId,
+}) {
+  if (!sanctionStore) {
+    await answerCallback(api, callbackId, 'Хранилище санкций не подключено.');
+    return {
+      action: 'command',
+      command: `callback:sanction:${parsedPayload.action}`,
+      userId,
+      noticeSent: true,
+    };
+  }
+
+  let text;
+  if (parsedPayload.action === 'list') {
+    text = formatBansMessage({
+      chatId: parsedPayload.chatId,
+      sanctionStore,
+      adminStore,
+      links: true,
+    });
+  } else if (parsedPayload.action === 'unban') {
+    const result = sanctionStore.liftBan({
+      chatId: parsedPayload.chatId,
+      userId: parsedPayload.userId,
+      moderatorUserId: userId,
+    });
+    text = formatUnbanResult(result, adminStore, { links: true });
+  } else {
+    if (isAdmin(parsedPayload.userId, adminUserIds, adminStore)) {
+      const text = 'Администраторов бота нельзя отправить в soft-ban.';
+      await answerCallback(api, callbackId, text, {
+        updateMessage: true,
+        format: 'markdown',
+      });
+      return {
+        action: 'command',
+        command: `callback:sanction:${parsedPayload.action}`,
+        userId,
+        noticeSent: true,
+      };
+    }
+
+    const duration = BAN_DURATIONS[parsedPayload.duration];
+    const result = sanctionStore.setBan({
+      chatId: parsedPayload.chatId,
+      userId: parsedPayload.userId,
+      durationMs: duration?.durationMs,
+      moderatorUserId: userId,
+      reason: 'manual-button',
+    });
+    text = formatBanResult(result, adminStore, { links: true });
+  }
+
+  await answerCallback(api, callbackId, text, {
+    updateMessage: true,
+    format: 'markdown',
+  });
+
+  return {
+    action: 'command',
+    command: `callback:sanction:${parsedPayload.action}`,
     userId,
     noticeSent: true,
   };
@@ -379,6 +514,7 @@ async function maybeHandleCommand({
   userId,
   dictionaryStore,
   adminStore,
+  sanctionStore,
   adminUserIds,
   isDirectMessage = false,
 }) {
@@ -419,6 +555,9 @@ async function maybeHandleCommand({
     '/addadmin',
     '/removeadmin',
     '/deladmin',
+    '/ban',
+    '/unban',
+    '/bans',
   ]);
   if (!adminCommands.has(command)) {
     return { handled: false };
@@ -455,6 +594,9 @@ async function maybeHandleCommand({
         '/admins - показать администраторов бота',
         '/addadmin user_id - добавить администратора бота',
         '/removeadmin user_id - удалить runtime-администратора',
+        '/ban user_id 30m|1d|7d|forever - soft-ban в этом чате',
+        '/unban user_id - снять soft-ban в этом чате',
+        '/bans - показать активные soft-ban в этом чате',
         'Можно отправить контакт пользователя: бот покажет user_id и кнопки для админки.',
         'В ЛС бот отвечает только администраторам. Для остальных доступна только /id.',
       ].join('\n'),
@@ -471,6 +613,20 @@ async function maybeHandleCommand({
       extra: { format: 'markdown' },
     });
     return { handled: true, command, noticeSent: true };
+  }
+
+  if (['/ban', '/unban', '/bans'].includes(command)) {
+    const result = await maybeHandleSanctionCommand({
+      api,
+      command,
+      argument,
+      chatId,
+      userId,
+      sanctionStore,
+      adminStore,
+      adminUserIds,
+    });
+    return { handled: true, command, noticeSent: result.noticeSent };
   }
 
   if (['/addadmin', '/removeadmin', '/deladmin'].includes(command)) {
@@ -546,6 +702,120 @@ async function maybeHandleCommand({
   return { handled: true, command, noticeSent: true };
 }
 
+async function maybeHandleSanctionCommand({
+  api,
+  command,
+  argument,
+  chatId,
+  userId,
+  sanctionStore,
+  adminStore,
+  adminUserIds,
+}) {
+  if (!chatId) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Soft-ban работает по конкретному чату. Используйте команду в нужной группе.',
+    });
+    return { noticeSent: true };
+  }
+
+  if (!sanctionStore) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Хранилище санкций не подключено.',
+    });
+    return { noticeSent: true };
+  }
+
+  if (command === '/bans') {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: formatBansMessage({
+        chatId,
+        sanctionStore,
+        adminStore,
+        links: true,
+      }),
+      extra: { format: 'markdown' },
+    });
+    return { noticeSent: true };
+  }
+
+  const [rawUserId, rawDuration, ...reasonParts] = argument.split(/\s+/u);
+  if (!rawUserId) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text:
+        command === '/ban'
+          ? 'Формат: /ban user_id 30m|1d|7d|forever'
+          : 'Формат: /unban user_id',
+    });
+    return { noticeSent: true };
+  }
+
+  if (command === '/unban') {
+    const result = sanctionStore.liftBan({
+      chatId,
+      userId: rawUserId,
+      moderatorUserId: userId,
+    });
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: formatUnbanResult(result, adminStore, { links: true }),
+      extra: { format: 'markdown' },
+    });
+    return { noticeSent: true };
+  }
+
+  const duration = parseBanDuration(rawDuration);
+  if (!duration) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Срок бана не распознан. Доступно: 30m, 1d, 7d, forever.',
+    });
+    return { noticeSent: true };
+  }
+
+  if (isAdmin(rawUserId, adminUserIds, adminStore)) {
+    await sendReply({
+      api,
+      chatId,
+      userId,
+      text: 'Администраторов бота нельзя отправить в soft-ban.',
+    });
+    return { noticeSent: true };
+  }
+
+  const result = sanctionStore.setBan({
+    chatId,
+    userId: rawUserId,
+    durationMs: duration.durationMs,
+    moderatorUserId: userId,
+    reason: reasonParts.join(' ') || 'manual-command',
+  });
+  await sendReply({
+    api,
+    chatId,
+    userId,
+    text: formatBanResult(result, adminStore, { links: true }),
+    extra: { format: 'markdown' },
+  });
+  return { noticeSent: true };
+}
+
 async function maybeHandleContactAdminCandidate({
   api,
   message,
@@ -612,10 +882,10 @@ async function maybeHandleContactAdminCandidate({
     api,
     chatId,
     userId,
-    text: formatContactAdminMessage(contact, { links: true }),
+    text: formatContactAdminMessage(contact, { links: true, chatId }),
     extra: {
       format: 'markdown',
-      attachments: [buildAdminContactKeyboard(contact.userId)],
+      attachments: [buildContactActionKeyboard(contact.userId, chatId)],
     },
   });
 
@@ -682,20 +952,55 @@ function applyAdminCommand(adminStore, baseAdminUserIds, command, argument) {
   };
 }
 
-function parseAdminCallbackPayload(payload) {
+function parseCallbackPayload(payload) {
   if (payload === 'admin:list') {
-    return { action: 'list' };
+    return { kind: 'admin', action: 'list' };
   }
 
-  const match = String(payload || '').match(/^admin:(add|remove):(\d+)$/u);
-  if (!match) {
-    return null;
+  const adminMatch = String(payload || '').match(/^admin:(add|remove):(\d+)$/u);
+  if (adminMatch) {
+    return {
+      kind: 'admin',
+      action: adminMatch[1],
+      userId: Number.parseInt(adminMatch[2], 10),
+    };
   }
 
-  return {
-    action: match[1],
-    userId: Number.parseInt(match[2], 10),
-  };
+  const sanctionListMatch = String(payload || '').match(/^sanction:list:([^:]+)$/u);
+  if (sanctionListMatch) {
+    return {
+      kind: 'sanction',
+      action: 'list',
+      chatId: sanctionListMatch[1],
+    };
+  }
+
+  const sanctionUnbanMatch = String(payload || '').match(
+    /^sanction:unban:([^:]+):(\d+)$/u,
+  );
+  if (sanctionUnbanMatch) {
+    return {
+      kind: 'sanction',
+      action: 'unban',
+      chatId: sanctionUnbanMatch[1],
+      userId: Number.parseInt(sanctionUnbanMatch[2], 10),
+    };
+  }
+
+  const sanctionBanMatch = String(payload || '').match(
+    /^sanction:ban:([^:]+):(\d+):(30m|1d|7d|forever)$/u,
+  );
+  if (sanctionBanMatch) {
+    return {
+      kind: 'sanction',
+      action: 'ban',
+      chatId: sanctionBanMatch[1],
+      userId: Number.parseInt(sanctionBanMatch[2], 10),
+      duration: sanctionBanMatch[3],
+    };
+  }
+
+  return null;
 }
 
 function getCallbackUserId(update) {
@@ -756,45 +1061,101 @@ function extractVcfFullName(vcfInfo) {
   return match?.[1]?.trim() || '';
 }
 
-function formatContactAdminMessage(contact, { links = false } = {}) {
+function formatContactAdminMessage(contact, { links = false, chatId } = {}) {
   const contactLabel = formatKnownUser(contact.userId, {
     [String(contact.userId)]: contact,
   }, { links });
 
-  return [
+  const lines = [
     `Получен контакт: ${contactLabel}.`,
     `MAX user_id: ${contact.userId}`,
     'Что сделать с этим пользователем?',
-  ].join('\n');
+  ];
+
+  if (!chatId) {
+    lines.push('Soft-ban работает по конкретному чату. Для бана отправьте контакт в нужной группе.');
+  }
+
+  return lines.join('\n');
 }
 
-function buildAdminContactKeyboard(userId) {
+function buildContactActionKeyboard(userId, chatId) {
+  const buttons = [
+    [
+      {
+        type: 'callback',
+        text: 'Добавить админом',
+        payload: `admin:add:${userId}`,
+      },
+    ],
+    [
+      {
+        type: 'callback',
+        text: 'Убрать админа',
+        payload: `admin:remove:${userId}`,
+      },
+    ],
+  ];
+
+  if (chatId) {
+    buttons.push(
+      [
+        {
+          type: 'callback',
+          text: 'Бан 30 минут',
+          payload: `sanction:ban:${chatId}:${userId}:30m`,
+        },
+      ],
+      [
+        {
+          type: 'callback',
+          text: 'Бан 1 день',
+          payload: `sanction:ban:${chatId}:${userId}:1d`,
+        },
+      ],
+      [
+        {
+          type: 'callback',
+          text: 'Бан 7 дней',
+          payload: `sanction:ban:${chatId}:${userId}:7d`,
+        },
+      ],
+      [
+        {
+          type: 'callback',
+          text: 'Бан навсегда',
+          payload: `sanction:ban:${chatId}:${userId}:forever`,
+        },
+      ],
+      [
+        {
+          type: 'callback',
+          text: 'Снять бан',
+          payload: `sanction:unban:${chatId}:${userId}`,
+        },
+      ],
+      [
+        {
+          type: 'callback',
+          text: 'Показать баны',
+          payload: `sanction:list:${chatId}`,
+        },
+      ],
+    );
+  }
+
+  buttons.push([
+    {
+      type: 'callback',
+      text: 'Показать админов',
+      payload: 'admin:list',
+    },
+  ]);
+
   return {
     type: 'inline_keyboard',
     payload: {
-      buttons: [
-        [
-          {
-            type: 'callback',
-            text: 'Добавить админом',
-            payload: `admin:add:${userId}`,
-          },
-        ],
-        [
-          {
-            type: 'callback',
-            text: 'Убрать админа',
-            payload: `admin:remove:${userId}`,
-          },
-        ],
-        [
-          {
-            type: 'callback',
-            text: 'Показать админов',
-            payload: 'admin:list',
-          },
-        ],
-      ],
+      buttons,
     },
   };
 }
@@ -844,6 +1205,57 @@ function formatAdminsMessage(baseAdminUserIds, adminStore, { links = false } = {
   ].join('\n\n');
 }
 
+function formatBanResult(result, adminStore, { links = false } = {}) {
+  if (!result.changed) {
+    return 'Не удалось включить soft-ban. Проверьте user_id и чат.';
+  }
+
+  const userLabel = formatKnownUserId(result.ban.userId, adminStore, { links });
+  const until = formatBanUntil(result.ban);
+  const verb = result.action === 'updated' ? 'обновлён' : 'включён';
+  return [
+    `Soft-ban ${verb}: ${userLabel}`,
+    `Срок: ${until}`,
+    'Пока ban активен, бот будет удалять сообщения пользователя в этом чате.',
+  ].join('\n');
+}
+
+function formatUnbanResult(result, adminStore, { links = false } = {}) {
+  const userLabel = formatKnownUserId(result.userId ?? result.ban?.userId, adminStore, {
+    links,
+  });
+
+  if (!result.changed && result.reason === 'not-found') {
+    return `Активный soft-ban не найден: ${userLabel}`;
+  }
+
+  if (!result.changed) {
+    return 'Не удалось снять soft-ban. Проверьте user_id и чат.';
+  }
+
+  return `Soft-ban снят: ${userLabel}`;
+}
+
+function formatBansMessage({ chatId, sanctionStore, adminStore, links = false }) {
+  const activeBans = sanctionStore.listActiveBans(chatId);
+  if (!activeBans.length) {
+    return 'Активных soft-ban в этом чате нет.';
+  }
+
+  return [
+    'Активные soft-ban в этом чате:',
+    ...activeBans.map((ban) => {
+      const userLabel = formatKnownUserId(ban.userId, adminStore, { links });
+      return `- ${userLabel} — ${formatBanUntil(ban)}`;
+    }),
+  ].join('\n');
+}
+
+function formatBanUntil(ban) {
+  if (!ban?.expiresAt) return 'навсегда, до снятия бана';
+  return `до ${formatDateTime(ban.expiresAt)}`;
+}
+
 function formatAdminList(ids, knownUsers = {}, { links = false } = {}) {
   if (!ids?.length) return 'пусто';
   return ids
@@ -886,6 +1298,39 @@ function formatUserMention(userId, name) {
 function getStoredProfileName(profile = {}) {
   if (profile.name) return profile.name;
   return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
+}
+
+function parseBanDuration(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  const aliases = {
+    '30m': '30m',
+    '30м': '30m',
+    '30min': '30m',
+    '30мин': '30m',
+    '1d': '1d',
+    '1д': '1d',
+    день: '1d',
+    '7d': '7d',
+    '7д': '7d',
+    неделя: '7d',
+    forever: 'forever',
+    навсегда: 'forever',
+    permanent: 'forever',
+    perm: 'forever',
+  };
+  const key = aliases[normalized] || normalized;
+  return BAN_DURATIONS[key] ? { key, ...BAN_DURATIONS[key] } : null;
+}
+
+function formatDateTime(value) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
 }
 
 function escapeMarkdownLinkText(value) {

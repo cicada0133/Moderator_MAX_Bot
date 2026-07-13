@@ -5,10 +5,12 @@ import { createAdminStore } from './admin-store.js';
 import { createCustomDictionaryStore } from './custom-dictionary.js';
 import { createMaxApi } from './max-api.js';
 import { createModerator } from './moderation.js';
+import { createSanctionStore } from './sanction-store.js';
 
 const config = loadConfig();
 const adminStore = createAdminStore(config.customAdminsPath);
 const dictionaryStore = createCustomDictionaryStore(config.customDictionaryPath);
+const sanctionStore = createSanctionStore(config.customSanctionsPath);
 const api = createMaxApi({
   token: config.token,
   baseUrl: config.apiBaseUrl,
@@ -22,6 +24,7 @@ const moderator = createModerator({
   allowWords: config.allowWords,
   dictionaryStore,
   adminStore,
+  sanctionStore,
   adminUserIds: config.adminUserIds,
 });
 
@@ -60,7 +63,7 @@ async function processWebhookUpdates(updates) {
   for (const update of updates) {
     try {
       const result = await moderator.handleUpdate(update);
-      if (['deleted', 'would-delete'].includes(result.action)) {
+      if (['deleted', 'would-delete', 'soft-ban-delete'].includes(result.action)) {
         console.log(
           `${result.action}: message=${result.messageId}; chat=${result.chatId ?? 'unknown'}; user=${result.userId ?? 'unknown'}; name=${result.userName ?? 'unknown'}; token=${result.token ?? 'unknown'}; reason=${result.reason}; notice=${result.noticeSent}`,
         );
