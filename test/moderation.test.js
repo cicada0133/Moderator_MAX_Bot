@@ -727,7 +727,7 @@ describe('createModerator', () => {
     );
   });
 
-  it('extracts MAX user id from contact cards and offers admin buttons', async () => {
+  it('extracts MAX user id from contact cards and offers admin buttons only', async () => {
     const api = {
       deleteMessage: vi.fn(),
       sendMessageToChat: vi.fn(),
@@ -792,7 +792,7 @@ describe('createModerator', () => {
                 [
                   expect.objectContaining({
                     type: 'callback',
-                    payload: 'sanction:menu:777:456',
+                    payload: 'admin:list',
                   }),
                 ],
               ]),
@@ -801,9 +801,11 @@ describe('createModerator', () => {
         ],
       }),
     );
+    const replyOptions = api.sendMessageToChat.mock.calls[0][2];
+    expect(JSON.stringify(replyOptions.attachments)).not.toContain('sanction:');
   });
 
-  it('does not offer soft-ban menu for contacts in direct dialogs', async () => {
+  it('does not offer soft-ban buttons for contacts in direct dialogs', async () => {
     const api = {
       deleteMessage: vi.fn(),
       sendMessageToChat: vi.fn(),
@@ -846,12 +848,12 @@ describe('createModerator', () => {
     expect(api.sendMessageToChat).toHaveBeenCalledWith(
       2757858,
       expect.stringContaining(
-        'Soft-ban работает по конкретному чату. Для бана отправьте контакт в нужной группе.',
+        'Soft-ban через контактные кнопки отключён. Используйте команды в нужной группе.',
       ),
       expect.any(Object),
     );
     expect(JSON.stringify(replyOptions.attachments)).not.toContain(
-      'sanction:menu',
+      'sanction:',
     );
   });
 
@@ -931,7 +933,7 @@ describe('createModerator', () => {
     });
   });
 
-  it('opens a separate soft-ban menu from contact callback buttons', async () => {
+  it('rejects old soft-ban menu callback buttons', async () => {
     const api = {
       answerCallback: vi.fn(),
     };
@@ -963,38 +965,21 @@ describe('createModerator', () => {
     });
 
     expect(result.action).toBe('command');
+    expect(sanctionStore.setBan).not.toHaveBeenCalled();
     expect(api.answerCallback).toHaveBeenCalledWith(
       'callback-soft-ban-menu',
-      expect.objectContaining({
-        notification: expect.stringContaining('Меню банов: Павел'),
-        message: expect.objectContaining({
-          format: 'markdown',
-          text: expect.stringContaining('Меню банов: [Павел]'),
-          attachments: [
-            expect.objectContaining({
-              type: 'inline_keyboard',
-              payload: expect.objectContaining({
-                buttons: expect.arrayContaining([
-                  [
-                    expect.objectContaining({
-                      payload: 'sanction:ban:777:456:30m',
-                    }),
-                  ],
-                  [
-                    expect.objectContaining({
-                      payload: 'sanction:unban:777:456',
-                    }),
-                  ],
-                ]),
-              }),
-            }),
-          ],
-        }),
-      }),
+      {
+        notification:
+          'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+        message: {
+          text:
+            'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+        },
+      },
     );
   });
 
-  it('lets admins create soft bans from contact callback buttons', async () => {
+  it('rejects old soft-ban action callback buttons', async () => {
     const api = {
       answerCallback: vi.fn(),
     };
@@ -1007,15 +992,7 @@ describe('createModerator', () => {
       })),
     };
     const sanctionStore = {
-      setBan: vi.fn(() => ({
-        changed: true,
-        action: 'created',
-        ban: {
-          chatId: '777',
-          userId: 456,
-          expiresAt: '2026-07-13T12:30:00.000Z',
-        },
-      })),
+      setBan: vi.fn(),
     };
     const moderator = createModerator({
       api,
@@ -1034,22 +1011,17 @@ describe('createModerator', () => {
     });
 
     expect(result.action).toBe('command');
-    expect(sanctionStore.setBan).toHaveBeenCalledWith({
-      chatId: '777',
-      userId: 456,
-      durationMs: 30 * 60 * 1000,
-      moderatorUserId: 123,
-      reason: 'manual-button',
-    });
+    expect(sanctionStore.setBan).not.toHaveBeenCalled();
     expect(api.answerCallback).toHaveBeenCalledWith(
       'callback-soft-ban',
-      expect.objectContaining({
-        notification: expect.stringContaining('Soft-ban включён'),
-        message: expect.objectContaining({
-          format: 'markdown',
-          text: expect.stringContaining('Soft-ban включён'),
-        }),
-      }),
+      {
+        notification:
+          'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+        message: {
+          text:
+            'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+        },
+      },
     );
   });
 
@@ -1093,15 +1065,16 @@ describe('createModerator', () => {
       'callback-dialog-soft-ban',
       {
         notification:
-          'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
+          'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
         message: {
-          text: 'Soft-ban работает только в группе. В ЛС с ботом ban не включается.',
+          text:
+            'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
         },
       },
     );
   });
 
-  it('does not let admins soft-ban bot admins from callback buttons', async () => {
+  it('rejects old soft-ban callback buttons even for bot admins', async () => {
     const api = {
       answerCallback: vi.fn(),
     };
@@ -1132,7 +1105,8 @@ describe('createModerator', () => {
     expect(api.answerCallback).toHaveBeenCalledWith(
       'callback-soft-ban-admin',
       expect.objectContaining({
-        notification: 'Администраторов бота нельзя отправить в soft-ban.',
+        notification:
+          'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
       }),
     );
   });
