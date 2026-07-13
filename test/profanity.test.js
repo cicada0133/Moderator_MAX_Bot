@@ -13,6 +13,9 @@ describe('findProfanity', () => {
   it('detects punctuation and lookalike obfuscation inside a word', () => {
     expect(findProfanity('п.и.з.дец').matched).toBe(true);
     expect(findProfanity('xуeво').matched).toBe(true);
+    expect(findProfanity('d0лб0еб').matched).toBe(true);
+    expect(findProfanity('долбо3б').matched).toBe(true);
+    expect(findProfanity('d0лб03б').matched).toBe(true);
   });
 
   it('does not flag normal words with similar letters', () => {
@@ -47,5 +50,6 @@ describe('findProfanity', () => {
 describe('tokenizeForModeration', () => {
   it('normalizes lowercase text and simple latin lookalikes', () => {
     expect(tokenizeForModeration('XУEВО!')).toEqual(['хуево']);
+    expect(tokenizeForModeration('d0лб03б')).toEqual(['долбозб']);
   });
 });

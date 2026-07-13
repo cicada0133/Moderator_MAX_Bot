@@ -3,7 +3,10 @@ import russianBadWords from 'russian-bad-words';
 const LOOKALIKE_MAP = new Map(
   Object.entries({
     a: 'а',
+    b: 'б',
+    d: 'д',
     e: 'е',
+    l: 'л',
     o: 'о',
     p: 'р',
     c: 'с',
@@ -31,6 +34,7 @@ const DEFAULT_RULES = [
   { label: 'м-мат', pattern: /м[ао]нд/u },
   { label: 'залупа', pattern: /залуп/u },
   { label: 'гандон', pattern: /гандон/u },
+  { label: 'д-мат', pattern: /д[оа]лб[оа](?:е|з)б/u },
   { label: 'мудак', pattern: /муд[ао](?:к|ч)/u },
   { label: 'пидор', pattern: /п[ие]д(?:а|о)?р/u },
 ];
