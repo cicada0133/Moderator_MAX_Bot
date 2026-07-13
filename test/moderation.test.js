@@ -265,7 +265,12 @@ describe('createModerator', () => {
     expect(result.action).toBe('command');
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
-      expect.stringContaining('Ответьте на сообщение командой /ban 30'),
+      expect.stringContaining('Ответьте командой на сообщение того пользователя'),
+      { notify: false },
+    );
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('Без суффикса число считается минутами, с d — днями.'),
       { notify: false },
     );
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
