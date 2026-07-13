@@ -830,7 +830,8 @@ function formatAdminCommandResult(result, adminStore, { links = false } = {}) {
 }
 
 function formatAdminsMessage(baseAdminUserIds, adminStore, { links = false } = {}) {
-  const storedAdmins = adminStore?.list() || {};
+  const pruneResult = adminStore?.pruneBaseAdmins?.(baseAdminUserIds);
+  const storedAdmins = pruneResult?.admins || adminStore?.list() || {};
   const runtimeAdminUserIds = storedAdmins.adminUserIds || [];
   const allAdminUserIds = [
     ...new Set([...baseAdminUserIds, ...runtimeAdminUserIds]),

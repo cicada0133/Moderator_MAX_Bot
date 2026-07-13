@@ -28,4 +28,31 @@ describe('createAdminStore', () => {
       },
     });
   });
+
+  it('removes runtime admins that are already configured in env', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'max-admin-store-'));
+    const store = createAdminStore(path.join(directory, 'admins.json'));
+
+    store.addAdmin(123, { name: 'Мария' });
+    store.addAdmin(456, { name: 'Павел' });
+
+    expect(store.pruneBaseAdmins([456, 789])).toEqual({
+      changed: true,
+      removedUserIds: [456],
+      admins: {
+        adminUserIds: [123],
+        knownUsers: {
+          123: { userId: 123, name: 'Мария' },
+          456: { userId: 456, name: 'Павел' },
+        },
+      },
+    });
+    expect(store.list()).toEqual({
+      adminUserIds: [123],
+      knownUsers: {
+        123: { userId: 123, name: 'Мария' },
+        456: { userId: 456, name: 'Павел' },
+      },
+    });
+  });
 });

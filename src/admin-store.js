@@ -56,6 +56,30 @@ export function createAdminStore(filePath) {
     return { changed: true, userId: parsedUserId };
   }
 
+  function pruneBaseAdmins(baseAdminUserIds = []) {
+    const baseAdminSet = new Set(normalizeUserIds(baseAdminUserIds));
+    const admins = readAdmins();
+
+    if (baseAdminSet.size === 0) {
+      return { changed: false, removedUserIds: [], admins };
+    }
+
+    const nextAdminUserIds = admins.adminUserIds.filter(
+      (item) => !baseAdminSet.has(item),
+    );
+    const removedUserIds = admins.adminUserIds.filter((item) =>
+      baseAdminSet.has(item),
+    );
+
+    if (removedUserIds.length === 0) {
+      return { changed: false, removedUserIds, admins };
+    }
+
+    admins.adminUserIds = nextAdminUserIds;
+    writeAdmins(admins);
+    return { changed: true, removedUserIds, admins };
+  }
+
   function upsertKnownUser(profile = {}) {
     const normalized = normalizeKnownUser(profile);
     if (!normalized) {
@@ -111,6 +135,7 @@ export function createAdminStore(filePath) {
     list,
     addAdmin,
     removeAdmin,
+    pruneBaseAdmins,
     upsertKnownUser,
   };
 }
