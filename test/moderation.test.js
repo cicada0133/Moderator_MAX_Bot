@@ -506,7 +506,7 @@ describe('createModerator', () => {
               buttons: [
                 [
                   expect.objectContaining({
-                    text: 'Убрать админа',
+                    text: 'Убрать Павел Лебединский (456)',
                     payload: 'admin:remove:456',
                   }),
                 ],
@@ -798,7 +798,7 @@ describe('createModerator', () => {
               buttons: [
                 [
                   expect.objectContaining({
-                    text: 'Снять ban',
+                    text: 'Снять ban Павел (456)',
                     payload: 'sanction:unban:777:456',
                   }),
                 ],
@@ -1069,6 +1069,52 @@ describe('createModerator', () => {
     );
   });
 
+  it('clears admin buttons after removing the last runtime admin', async () => {
+    const api = {
+      answerCallback: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({
+        adminUserIds: [],
+        knownUsers: {
+          456: { userId: 456, name: 'Павел Лебединский' },
+        },
+      })),
+      removeAdmin: vi.fn(() => ({
+        changed: true,
+        userId: 456,
+      })),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-remove-last-admin',
+        payload: 'admin:remove:456',
+        user: { user_id: 123 },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.removeAdmin).toHaveBeenCalledWith(456);
+    expect(api.answerCallback).toHaveBeenCalledWith(
+      'callback-remove-last-admin',
+      expect.objectContaining({
+        notification: 'Администратор удалён из runtime-списка: Павел Лебединский (456)',
+        message: expect.objectContaining({
+          format: 'markdown',
+          text: expect.stringContaining('Добавлены командами:\nпусто'),
+          attachments: [],
+        }),
+      }),
+    );
+  });
+
   it('rejects old soft-ban menu callback buttons', async () => {
     const api = {
       answerCallback: vi.fn(),
@@ -1110,6 +1156,7 @@ describe('createModerator', () => {
         message: {
           text:
             'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+          attachments: [],
         },
       },
     );
@@ -1156,6 +1203,7 @@ describe('createModerator', () => {
         message: {
           text:
             'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+          attachments: [],
         },
       },
     );
@@ -1213,6 +1261,7 @@ describe('createModerator', () => {
         message: expect.objectContaining({
           format: 'markdown',
           text: expect.stringContaining('Активных soft-ban в этом чате нет.'),
+          attachments: [],
         }),
       }),
     );
@@ -1262,6 +1311,7 @@ describe('createModerator', () => {
         message: {
           text:
             'Бан-кнопки отключены.\nИспользуйте команды вручную в нужной группе:\n/ban user_id 30\n/unban user_id\n/bans',
+          attachments: [],
         },
       },
     );

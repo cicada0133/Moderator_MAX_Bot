@@ -321,7 +321,11 @@ async function handleCallbackUpdate({
       api,
       callbackId,
       formatSanctionCallbackDisabledMessage(),
-      { updateMessage: true },
+      withKeyboard(
+        { updateMessage: true },
+        null,
+        { clearWhenMissing: true },
+      ),
     );
     return {
       action: 'command',
@@ -339,6 +343,7 @@ async function handleCallbackUpdate({
       withKeyboard(
         { updateMessage: true, format: 'markdown' },
         buildAdminsActionKeyboard(adminUserIds, adminStore),
+        { clearWhenMissing: true },
       ),
     );
     return {
@@ -390,6 +395,7 @@ async function handleCallbackUpdate({
       ...withKeyboard(
         {},
         buildAdminsActionKeyboard(adminUserIds, adminStore),
+        { clearWhenMissing: true },
       ),
     },
   );
@@ -494,6 +500,7 @@ async function handleSanctionUnbanCallback({
         sanctionStore,
         adminStore,
       }),
+      { clearWhenMissing: true },
     ),
   });
 
@@ -525,8 +532,12 @@ async function answerCallback(
   });
 }
 
-function withKeyboard(options = {}, keyboard) {
-  return keyboard ? { ...options, attachments: [keyboard] } : options;
+function withKeyboard(options = {}, keyboard, { clearWhenMissing = false } = {}) {
+  if (keyboard) {
+    return { ...options, attachments: [keyboard] };
+  }
+
+  return clearWhenMissing ? { ...options, attachments: [] } : options;
 }
 
 function rememberKnownUser(adminStore, profile) {
@@ -1358,7 +1369,7 @@ function buildAdminsActionKeyboard(baseAdminUserIds, adminStore, { includeBack =
   const buttons = runtimeAdminUserIds.map((id) => [
     {
       type: 'callback',
-      text: 'Убрать админа',
+      text: `Убрать ${formatButtonUserLabel(id, adminStore)}`,
       payload: `admin:remove:${id}`,
     },
   ]);
@@ -1395,7 +1406,7 @@ function buildBansActionKeyboard({ chatId, sanctionStore, adminStore }) {
       buttons: activeBans.map((ban) => [
         {
           type: 'callback',
-          text: 'Снять ban',
+          text: `Снять ban ${formatButtonUserLabel(ban.userId, adminStore)}`,
           payload: `sanction:unban:${chatId}:${ban.userId}`,
         },
       ]),
@@ -1613,6 +1624,11 @@ function formatKnownUser(userId, knownUsers = {}, { links = false } = {}) {
   }
 
   return String(userId);
+}
+
+function formatButtonUserLabel(userId, adminStore) {
+  const label = stripMarkdownLinks(formatKnownUserId(userId, adminStore));
+  return label.length > 48 ? `${label.slice(0, 45)}...` : label;
 }
 
 function formatUserMention(userId, name) {
