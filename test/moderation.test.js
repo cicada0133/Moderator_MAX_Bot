@@ -228,6 +228,8 @@ describe('createModerator', () => {
     });
 
     expect(result.action).toBe('command');
+    const helpText = api.sendMessageToUser.mock.calls[0][1];
+    expect(helpText).not.toContain('Быстро');
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       expect.stringContaining('Баны\n  /banhelp'),
@@ -269,6 +271,11 @@ describe('createModerator', () => {
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       expect.stringContaining('В ЛС бан не включается'),
+      { notify: false },
+    );
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('Жёсткий бан администратор делает вручную'),
       { notify: false },
     );
   });
