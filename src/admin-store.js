@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const EMPTY_ADMINS = {
   adminUserIds: [],
+  knownUsers: {},
 };
 
 export function createAdminStore(filePath) {
@@ -12,14 +13,20 @@ export function createAdminStore(filePath) {
     return readAdmins();
   }
 
-  function addAdmin(userId) {
+  function addAdmin(userId, profile = {}) {
     const parsedUserId = parseUserId(userId);
     if (!parsedUserId) {
       return { changed: false, reason: 'invalid-user-id', userId };
     }
 
     const admins = readAdmins();
+    admins.knownUsers = mergeKnownUser(admins.knownUsers, {
+      ...profile,
+      userId: parsedUserId,
+    });
+
     if (admins.adminUserIds.includes(parsedUserId)) {
+      writeAdmins(admins);
       return { changed: false, reason: 'already-exists', userId: parsedUserId };
     }
 
@@ -49,6 +56,30 @@ export function createAdminStore(filePath) {
     return { changed: true, userId: parsedUserId };
   }
 
+  function upsertKnownUser(profile = {}) {
+    const normalized = normalizeKnownUser(profile);
+    if (!normalized) {
+      return {
+        changed: false,
+        reason: 'invalid-user-id',
+        userId: profile.userId,
+      };
+    }
+
+    const admins = readAdmins();
+    const key = String(normalized.userId);
+    const previous = admins.knownUsers[key] || null;
+    admins.knownUsers = mergeKnownUser(admins.knownUsers, normalized);
+    const changed =
+      JSON.stringify(previous) !== JSON.stringify(admins.knownUsers[key]);
+
+    if (changed) {
+      writeAdmins(admins);
+    }
+
+    return { changed, userId: normalized.userId };
+  }
+
   function readAdmins() {
     ensureFile();
     const content = fs.readFileSync(absolutePath, 'utf8');
@@ -56,6 +87,7 @@ export function createAdminStore(filePath) {
 
     return {
       adminUserIds: normalizeUserIds(parsed.adminUserIds),
+      knownUsers: normalizeKnownUsers(parsed.knownUsers),
     };
   }
 
@@ -79,6 +111,7 @@ export function createAdminStore(filePath) {
     list,
     addAdmin,
     removeAdmin,
+    upsertKnownUser,
   };
 }
 
@@ -92,4 +125,59 @@ function normalizeUserIds(value) {
   return [...new Set(value.map(parseUserId).filter(Boolean))].sort(
     (left, right) => left - right,
   );
+}
+
+function normalizeKnownUsers(value) {
+  if (Array.isArray(value)) {
+    return value.reduce(mergeKnownUser, {});
+  }
+
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return Object.values(value).reduce(mergeKnownUser, {});
+}
+
+function mergeKnownUser(knownUsers, profile) {
+  const normalized = normalizeKnownUser(profile);
+  if (!normalized) {
+    return knownUsers;
+  }
+
+  const key = String(normalized.userId);
+  knownUsers[key] = {
+    ...(knownUsers[key] || {}),
+    ...normalized,
+  };
+  return knownUsers;
+}
+
+function normalizeKnownUser(profile = {}) {
+  const userId = parseUserId(profile.userId ?? profile.user_id);
+  if (!userId) {
+    return null;
+  }
+
+  const name = normalizeText(profile.name);
+  const firstName = normalizeText(profile.firstName ?? profile.first_name);
+  const lastName = normalizeText(profile.lastName ?? profile.last_name);
+  const username = normalizeUsername(profile.username);
+
+  return {
+    userId,
+    ...(name ? { name } : {}),
+    ...(firstName ? { firstName } : {}),
+    ...(lastName ? { lastName } : {}),
+    ...(username ? { username } : {}),
+  };
+}
+
+function normalizeText(value) {
+  const normalized = String(value || '').trim();
+  return normalized || '';
+}
+
+function normalizeUsername(value) {
+  return normalizeText(value).replace(/^@/u, '');
 }

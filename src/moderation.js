@@ -40,6 +40,10 @@ export function createModerator({
       return { action: 'ignored', reason: 'bot-message' };
     }
 
+    if (senderIsAdmin) {
+      rememberKnownUser(adminStore, getUserProfileFromSender(sender));
+    }
+
     if (isDirectMessage && !senderIsAdmin) {
       const commandResult = await maybeHandleCommand({
         api,
@@ -268,9 +272,12 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
     String(parsedPayload.userId),
   );
 
-  await answerCallback(api, callbackId, formatAdminCommandResult(result), {
-    updateMessage: true,
-  });
+  await answerCallback(
+    api,
+    callbackId,
+    formatAdminCommandResult(result, adminStore),
+    { updateMessage: true },
+  );
 
   return {
     action: 'command',
@@ -290,6 +297,10 @@ async function answerCallback(
     notification: text,
     ...(updateMessage ? { message: { text } } : {}),
   });
+}
+
+function rememberKnownUser(adminStore, profile) {
+  adminStore?.upsertKnownUser?.(profile);
 }
 
 async function sendModerationNotice({
@@ -341,8 +352,22 @@ function renderTemplate(template, values) {
 
 function getUserDisplayName(sender) {
   if (sender?.name) return sender.name;
+  const fullName = [sender?.first_name, sender?.last_name]
+    .filter(Boolean)
+    .join(' ');
+  if (fullName) return fullName;
   if (sender?.username) return `@${sender.username}`;
   return 'Участник';
+}
+
+function getUserProfileFromSender(sender = {}) {
+  return {
+    userId: sender.user_id ?? sender.userId,
+    name: sender.name || '',
+    firstName: sender.first_name || sender.firstName || '',
+    lastName: sender.last_name || sender.lastName || '',
+    username: sender.username || '',
+  };
 }
 
 async function maybeHandleCommand({
@@ -471,7 +496,7 @@ async function maybeHandleCommand({
       api,
       chatId,
       userId,
-      text: formatAdminCommandResult(result),
+      text: formatAdminCommandResult(result, adminStore),
     });
     return { handled: true, command, noticeSent: true };
   }
@@ -576,6 +601,8 @@ async function maybeHandleContactAdminCandidate({
       noticeSent: true,
     };
   }
+
+  rememberKnownUser(adminStore, contact);
 
   await sendReply({
     api,
@@ -704,6 +731,10 @@ function extractContactCandidate(attachments) {
       payload.name ||
       extractVcfFullName(payload.vcf_info) ||
       '',
+    firstName:
+      maxInfo.first_name || maxInfo.firstName || payload.first_name || '',
+    lastName: maxInfo.last_name || maxInfo.lastName || payload.last_name || '',
+    username: maxInfo.username || payload.username || '',
     hasHash: Boolean(payload.hash),
   };
 }
@@ -759,48 +790,82 @@ function buildAdminContactKeyboard(userId) {
   };
 }
 
-function formatAdminCommandResult(result) {
+function formatAdminCommandResult(result, adminStore) {
+  const userLabel = formatKnownUserId(result.userId, adminStore);
+
   if (result.reason === 'invalid-user-id') {
     return 'Не удалось разобрать user_id. Нужен числовой MAX user_id.';
   }
 
   if (!result.changed && result.reason === 'already-exists') {
-    return `Администратор уже добавлен: ${result.userId}`;
+    return `Администратор уже добавлен: ${userLabel}`;
   }
 
   if (!result.changed && result.reason === 'not-found') {
-    return `Администратор не найден в runtime-списке: ${result.userId}`;
+    return `Администратор не найден в runtime-списке: ${userLabel}`;
   }
 
   if (!result.changed && result.reason === 'base-admin') {
-    return `Администратор ${result.userId} задан в BOT_ADMIN_IDS. Его нельзя удалить командой, только через .env.`;
+    return `Администратор ${userLabel} задан в BOT_ADMIN_IDS. Его нельзя удалить командой, только через .env.`;
   }
 
   if (!result.changed && result.reason === 'base-admin-exists') {
-    return `Администратор ${result.userId} уже задан в BOT_ADMIN_IDS. Дополнительно добавлять его не нужно.`;
+    return `Администратор ${userLabel} уже задан в BOT_ADMIN_IDS. Дополнительно добавлять его не нужно.`;
   }
 
   if (result.type === 'addadmin') {
-    return `Администратор добавлен: ${result.userId}`;
+    return `Администратор добавлен: ${userLabel}`;
   }
 
-  return `Администратор удалён из runtime-списка: ${result.userId}`;
+  return `Администратор удалён из runtime-списка: ${userLabel}`;
 }
 
 function formatAdminsMessage(baseAdminUserIds, adminStore) {
-  const runtimeAdminUserIds = adminStore?.list().adminUserIds || [];
-  const allAdminUserIds = getAllAdminUserIds(baseAdminUserIds, adminStore);
+  const storedAdmins = adminStore?.list() || {};
+  const runtimeAdminUserIds = storedAdmins.adminUserIds || [];
+  const allAdminUserIds = [
+    ...new Set([...baseAdminUserIds, ...runtimeAdminUserIds]),
+  ].sort((left, right) => left - right);
 
   return [
-    `Администраторы бота: ${formatIds(allAdminUserIds)}`,
-    `Из .env: ${formatIds(baseAdminUserIds)}`,
-    `Добавлены командами: ${formatIds(runtimeAdminUserIds)}`,
-  ].join('\n');
+    `Администраторы бота:\n${formatAdminList(allAdminUserIds, storedAdmins.knownUsers)}`,
+    `Из .env:\n${formatAdminList(baseAdminUserIds, storedAdmins.knownUsers)}`,
+    `Добавлены командами:\n${formatAdminList(runtimeAdminUserIds, storedAdmins.knownUsers)}`,
+  ].join('\n\n');
 }
 
-function formatIds(ids) {
+function formatAdminList(ids, knownUsers = {}) {
   if (!ids?.length) return 'пусто';
-  return ids.join(', ');
+  return ids.map((id) => `- ${formatKnownUser(id, knownUsers)}`).join('\n');
+}
+
+function formatKnownUserId(userId, adminStore) {
+  return formatKnownUser(userId, adminStore?.list()?.knownUsers || {});
+}
+
+function formatKnownUser(userId, knownUsers = {}) {
+  const profile = knownUsers[String(userId)] || {};
+  const name = getStoredProfileName(profile);
+  const username = profile.username ? `@${profile.username}` : '';
+
+  if (name && username) {
+    return `${name} (${username}, ${userId})`;
+  }
+
+  if (username) {
+    return `${username} (${userId})`;
+  }
+
+  if (name) {
+    return `${name} (${userId})`;
+  }
+
+  return String(userId);
+}
+
+function getStoredProfileName(profile = {}) {
+  if (profile.name) return profile.name;
+  return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
 }
 
 function applyDictionaryCommand(dictionaryStore, command, argument) {

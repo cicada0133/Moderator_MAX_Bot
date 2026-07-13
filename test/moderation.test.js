@@ -314,6 +314,67 @@ describe('createModerator', () => {
     );
   });
 
+  it('shows known names and usernames in the admins list', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const adminStore = {
+      list: vi.fn(() => ({
+        adminUserIds: [456],
+        knownUsers: {
+          123: { userId: 123, name: 'Мария', username: 'maria' },
+          456: { userId: 456, name: 'Павел Лебединский' },
+        },
+      })),
+      upsertKnownUser: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      adminStore,
+      adminUserIds: [123],
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 123,
+          name: 'Мария',
+          username: 'maria',
+          is_bot: false,
+        },
+        recipient: { chat_id: null },
+        body: { mid: 'mid-admin-list-known', text: '/admins' },
+      },
+    });
+
+    expect(result.action).toBe('command');
+    expect(adminStore.upsertKnownUser).toHaveBeenCalledWith({
+      userId: 123,
+      name: 'Мария',
+      firstName: '',
+      lastName: '',
+      username: 'maria',
+    });
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      123,
+      [
+        'Администраторы бота:',
+        '- Мария (@maria, 123)',
+        '- Павел Лебединский (456)',
+        '',
+        'Из .env:',
+        '- Мария (@maria, 123)',
+        '',
+        'Добавлены командами:',
+        '- Павел Лебединский (456)',
+      ].join('\n'),
+      { notify: false },
+    );
+  });
+
   it('extracts MAX user id from contact cards and offers admin buttons', async () => {
     const api = {
       deleteMessage: vi.fn(),
@@ -322,6 +383,7 @@ describe('createModerator', () => {
     };
     const adminStore = {
       list: vi.fn(() => ({ adminUserIds: [] })),
+      upsertKnownUser: vi.fn(),
     };
     const moderator = createModerator({
       api,
@@ -352,6 +414,12 @@ describe('createModerator', () => {
     });
 
     expect(result.action).toBe('command');
+    expect(adminStore.upsertKnownUser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 456,
+        name: 'Павел',
+      }),
+    );
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       123,
       expect.stringContaining('MAX user_id: 456'),
