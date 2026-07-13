@@ -1,0 +1,25 @@
+{
+  "name": "max-chat-moderator-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MAX chat moderation bot that removes messages with Russian profanity.",
+  "scripts": {
+    "check": "node src/check-token.js",
+    "start": "node src/polling.js",
+    "start:webhook": "node src/webhook-server.js",
+    "webhook:subscribe": "node src/subscribe-webhook.js",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "russian-bad-words": "^0.5.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}
