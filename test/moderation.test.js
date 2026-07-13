@@ -506,7 +506,7 @@ describe('createModerator', () => {
               buttons: [
                 [
                   expect.objectContaining({
-                    text: 'Убрать Павел Лебединский (456)',
+                    text: 'Убрать админа',
                     payload: 'admin:remove:456',
                   }),
                 ],
@@ -798,7 +798,7 @@ describe('createModerator', () => {
               buttons: [
                 [
                   expect.objectContaining({
-                    text: 'Снять Павел (456)',
+                    text: 'Снять ban',
                     payload: 'sanction:unban:777:456',
                   }),
                 ],

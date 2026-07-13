@@ -1358,7 +1358,7 @@ function buildAdminsActionKeyboard(baseAdminUserIds, adminStore, { includeBack =
   const buttons = runtimeAdminUserIds.map((id) => [
     {
       type: 'callback',
-      text: `Убрать ${formatButtonUserLabel(id, adminStore)}`,
+      text: 'Убрать админа',
       payload: `admin:remove:${id}`,
     },
   ]);
@@ -1395,7 +1395,7 @@ function buildBansActionKeyboard({ chatId, sanctionStore, adminStore }) {
       buttons: activeBans.map((ban) => [
         {
           type: 'callback',
-          text: `Снять ${formatButtonUserLabel(ban.userId, adminStore)}`,
+          text: 'Снять ban',
           payload: `sanction:unban:${chatId}:${ban.userId}`,
         },
       ]),
@@ -1613,11 +1613,6 @@ function formatKnownUser(userId, knownUsers = {}, { links = false } = {}) {
   }
 
   return String(userId);
-}
-
-function formatButtonUserLabel(userId, adminStore) {
-  const label = stripMarkdownLinks(formatKnownUserId(userId, adminStore));
-  return label.length > 48 ? `${label.slice(0, 45)}...` : label;
 }
 
 function formatUserMention(userId, name) {
