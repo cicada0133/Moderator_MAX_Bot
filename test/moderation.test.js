@@ -339,6 +339,7 @@ describe('createModerator', () => {
     expect(adminStore.addAdmin).toHaveBeenCalledWith('456');
     expect(api.answerCallback).toHaveBeenCalledWith('callback-1', {
       notification: 'Администратор добавлен: 456',
+      message: { text: 'Администратор добавлен: 456' },
     });
   });
 

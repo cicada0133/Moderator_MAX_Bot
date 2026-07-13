@@ -160,9 +160,11 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
 
   if (!parsedPayload) {
     if (callbackId) {
-      await api.answerCallback(callbackId, {
-        notification: 'Кнопка устарела или не распознана.',
-      });
+      await answerCallback(
+        api,
+        callbackId,
+        'Кнопка устарела или не распознана.',
+      );
     }
     return { action: 'ignored', reason: 'unsupported-callback', userId };
   }
@@ -172,9 +174,11 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
   }
 
   if (!isAdmin(userId, adminUserIds, adminStore)) {
-    await api.answerCallback(callbackId, {
-      notification: 'Эта кнопка доступна только администратору бота.',
-    });
+    await answerCallback(
+      api,
+      callbackId,
+      'Эта кнопка доступна только администратору бота.',
+    );
     return {
       action: 'command',
       command: `callback:${parsedPayload.action}`,
@@ -184,9 +188,12 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
   }
 
   if (parsedPayload.action === 'list') {
-    await api.answerCallback(callbackId, {
-      notification: formatAdminsMessage(adminUserIds, adminStore),
-    });
+    await answerCallback(
+      api,
+      callbackId,
+      formatAdminsMessage(adminUserIds, adminStore),
+      { updateMessage: true },
+    );
     return {
       action: 'command',
       command: 'callback:admin-list',
@@ -196,9 +203,11 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
   }
 
   if (!adminStore) {
-    await api.answerCallback(callbackId, {
-      notification: 'Runtime-список администраторов не подключён.',
-    });
+    await answerCallback(
+      api,
+      callbackId,
+      'Runtime-список администраторов не подключён.',
+    );
     return {
       action: 'command',
       command: `callback:${parsedPayload.action}`,
@@ -216,8 +225,8 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
     String(parsedPayload.userId),
   );
 
-  await api.answerCallback(callbackId, {
-    notification: formatAdminCommandResult(result),
+  await answerCallback(api, callbackId, formatAdminCommandResult(result), {
+    updateMessage: true,
   });
 
   return {
@@ -226,6 +235,18 @@ async function handleCallbackUpdate({ api, update, adminStore, adminUserIds }) {
     userId,
     noticeSent: true,
   };
+}
+
+async function answerCallback(
+  api,
+  callbackId,
+  text,
+  { updateMessage = false } = {},
+) {
+  await api.answerCallback(callbackId, {
+    notification: text,
+    ...(updateMessage ? { message: { text } } : {}),
+  });
 }
 
 async function sendModerationNotice({
