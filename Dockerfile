@@ -1,4 +1,5 @@
-FROM node:20-bookworm-slim AS deps
+ARG NODE_IMAGE=node:20-bookworm-slim
+FROM ${NODE_IMAGE} AS deps
 
 WORKDIR /app
 
@@ -9,7 +10,8 @@ RUN apt-get update \
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-FROM node:20-bookworm-slim
+ARG NODE_IMAGE=node:20-bookworm-slim
+FROM ${NODE_IMAGE}
 
 WORKDIR /app
 ENV NODE_ENV=production

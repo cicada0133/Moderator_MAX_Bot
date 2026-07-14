@@ -149,6 +149,12 @@ docker compose restart max-moderator-bot
 
 Контейнер использует `restart: unless-stopped`, поэтому поднимется после падения процесса и после перезагрузки сервера. Файл `.env` не попадает в образ, а `./data` монтируется как volume в `/app/data`; SQLite-база `data/sanctions.sqlite` остаётся на сервере между пересборками.
 
+Если на сервере недоступен Docker Hub, можно заранее подготовить локальный базовый образ Node.js и указать его в `.env`:
+
+```env
+NODE_IMAGE=maxbot-node-base:20
+```
+
 Команды администратора:
 
 ```text

@@ -1,6 +1,9 @@
 services:
   max-moderator-bot:
-    build: .
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
     container_name: max-moderator-bot
     restart: unless-stopped
     env_file:
