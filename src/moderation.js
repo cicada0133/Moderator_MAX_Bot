@@ -7,6 +7,12 @@ const BAN_DURATIONS = {
   forever: { label: 'навсегда', durationMs: null },
 };
 
+const DEFAULT_ADMIN_LOG = {
+  enabled: false,
+  notify: false,
+  textLimit: 1200,
+};
+
 export function createModerator({
   api,
   dryRun = false,
@@ -18,6 +24,7 @@ export function createModerator({
   adminStore = null,
   sanctionStore = null,
   adminUserIds = [],
+  adminLog = DEFAULT_ADMIN_LOG,
   autoBanDefaults = {
     enabled: false,
     threshold: 3,
@@ -25,6 +32,8 @@ export function createModerator({
     durationMinutes: 30,
   },
 }) {
+  const adminLogSettings = normalizeAdminLog(adminLog);
+
   async function handleUpdate(update) {
     if (update?.update_type === 'message_callback') {
       return handleCallbackUpdate({
@@ -114,6 +123,21 @@ export function createModerator({
         }
 
         await api.deleteMessage(messageId);
+        const adminLogSent = await sendAdminModerationLog({
+          api,
+          adminLog: adminLogSettings,
+          adminUserIds,
+          adminStore,
+          action: 'soft-ban-delete',
+          chatId,
+          messageId,
+          userId,
+          userName,
+          username,
+          originalText: text,
+          reason: 'soft-ban',
+          ban: activeBan,
+        });
         return {
           action: 'soft-ban-delete',
           messageId,
@@ -124,6 +148,7 @@ export function createModerator({
           reason: 'soft-ban',
           ban: activeBan,
           noticeSent: false,
+          adminLogSent,
         };
       }
     }
@@ -212,6 +237,21 @@ export function createModerator({
         reason: result.reason,
         action: 'would-delete',
       });
+      const adminLogSent = await sendAdminModerationLog({
+        api,
+        adminLog: adminLogSettings,
+        adminUserIds,
+        adminStore,
+        action: 'would-delete',
+        chatId,
+        messageId,
+        userId,
+        userName,
+        username,
+        originalText: text,
+        token: result.token,
+        reason: result.reason,
+      });
 
       return {
         action: 'would-delete',
@@ -223,6 +263,7 @@ export function createModerator({
         reason: result.reason,
         token: result.token,
         noticeSent,
+        adminLogSent,
       };
     }
 
@@ -252,6 +293,22 @@ export function createModerator({
       autoBanDefaults,
       senderIsAdmin,
     });
+    const adminLogSent = await sendAdminModerationLog({
+      api,
+      adminLog: adminLogSettings,
+      adminUserIds,
+      adminStore,
+      action: 'deleted',
+      chatId,
+      messageId,
+      userId,
+      userName,
+      username,
+      originalText: text,
+      token: result.token,
+      reason: result.reason,
+      autoBan: autoBanResult,
+    });
 
     return {
       action: 'deleted',
@@ -265,6 +322,7 @@ export function createModerator({
       noticeSent,
       autoBan: autoBanResult.ban,
       autoBanNoticeSent: autoBanResult.noticeSent,
+      adminLogSent,
     };
   }
 
@@ -610,6 +668,7 @@ async function maybeApplyAutoBan({
       noticeSent: false,
       count: violation.count || 0,
       threshold: settings.threshold,
+      settings,
     };
   }
 
@@ -628,6 +687,7 @@ async function maybeApplyAutoBan({
       noticeSent: false,
       count: violation.count,
       threshold: settings.threshold,
+      settings,
     };
   }
 
@@ -648,6 +708,7 @@ async function maybeApplyAutoBan({
     noticeSent,
     count: violation.count,
     threshold: settings.threshold,
+    settings,
   };
 }
 
@@ -712,6 +773,148 @@ async function sendModerationNotice({
   }
 
   return false;
+}
+
+async function sendAdminModerationLog({
+  api,
+  adminLog,
+  adminUserIds,
+  adminStore,
+  action,
+  chatId,
+  messageId,
+  userId,
+  userName,
+  username,
+  originalText,
+  token,
+  reason,
+  autoBan,
+  ban,
+}) {
+  if (!adminLog?.enabled) {
+    return false;
+  }
+
+  const adminIds = getAllAdminUserIds(adminUserIds, adminStore);
+  if (!adminIds.length) {
+    return false;
+  }
+
+  const text = formatAdminModerationLog({
+    action,
+    chatId,
+    messageId,
+    userId,
+    userName,
+    username,
+    originalText,
+    token,
+    reason,
+    autoBan,
+    ban,
+    textLimit: adminLog.textLimit,
+  });
+
+  const results = await Promise.all(
+    adminIds.map(async (adminId) => {
+      try {
+        await api.sendMessageToUser(adminId, text, {
+          notify: Boolean(adminLog.notify),
+        });
+        return true;
+      } catch (error) {
+        console.error(`Failed to send admin moderation log to ${adminId}`);
+        console.error(error?.data || error);
+        return false;
+      }
+    }),
+  );
+
+  return results.some(Boolean);
+}
+
+function formatAdminModerationLog({
+  action,
+  chatId,
+  messageId,
+  userId,
+  userName,
+  username,
+  originalText,
+  token,
+  reason,
+  autoBan,
+  ban,
+  textLimit,
+}) {
+  const lines = [
+    'Лог модерации',
+    '',
+    `Действие: ${formatAdminLogAction(action)}`,
+    `Чат: ${chatId || 'неизвестно'}`,
+    `Сообщение: ${messageId || 'неизвестно'}`,
+    `Пользователь: ${formatAdminLogUser({ userId, userName, username })}`,
+    `Сработало: ${token ? `"${token}"` : 'без слова'}`,
+    `Правило: ${reason || 'неизвестно'}`,
+  ];
+
+  if (autoBan?.count && autoBan?.threshold) {
+    lines.push(`Нарушения для авто-ban: ${autoBan.count}/${autoBan.threshold}`);
+  }
+
+  if (autoBan?.applied && autoBan.settings) {
+    lines.push(
+      `Auto-ban: включён на ${formatMinutesLabel(autoBan.settings.durationMinutes)}`,
+    );
+  }
+
+  if (ban && action === 'soft-ban-delete') {
+    lines.push(`Soft-ban: активен ${formatBanUntil(ban)}`);
+  }
+
+  lines.push('', 'Исходный текст:', truncateAdminLogText(originalText, textLimit));
+  return lines.join('\n');
+}
+
+function formatAdminLogAction(action) {
+  if (action === 'deleted') return 'сообщение удалено';
+  if (action === 'would-delete') return 'DRY_RUN: бот удалил бы сообщение';
+  if (action === 'soft-ban-delete') return 'удалено из-за активного soft-ban';
+  return action || 'неизвестно';
+}
+
+function formatAdminLogUser({ userId, userName, username }) {
+  const parts = [];
+  if (userName) parts.push(userName);
+  if (username) parts.push(username);
+  if (userId) parts.push(`user_id ${userId}`);
+  return parts.join(', ') || 'неизвестно';
+}
+
+function truncateAdminLogText(value, limit) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '(нет текста)';
+  }
+
+  const maxLength = Number.isSafeInteger(limit) && limit > 0 ? limit : 1200;
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength)}\n... обрезано, всего ${text.length} символов`;
+}
+
+function normalizeAdminLog(adminLog) {
+  return {
+    ...DEFAULT_ADMIN_LOG,
+    ...(adminLog || {}),
+    textLimit:
+      Number.isSafeInteger(adminLog?.textLimit) && adminLog.textLimit > 0
+        ? adminLog.textLimit
+        : DEFAULT_ADMIN_LOG.textLimit,
+  };
 }
 
 function renderTemplate(template, values) {

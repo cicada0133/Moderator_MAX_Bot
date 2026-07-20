@@ -1663,4 +1663,113 @@ describe('createModerator', () => {
     );
     expect(api.sendMessageToUser).not.toHaveBeenCalled();
   });
+
+  it('sends moderation details to bot admins when admin log is enabled', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const originalText = 'ну это пиздец\nвторая строка';
+    const moderator = createModerator({
+      api,
+      dryRun: false,
+      notify: false,
+      adminUserIds: [999, 1000],
+      adminLog: { enabled: true, textLimit: 200 },
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 123,
+          name: 'Мария',
+          username: 'maria',
+          is_bot: false,
+        },
+        recipient: { chat_id: 456 },
+        body: { mid: 'mid-admin-log', text: originalText },
+      },
+    });
+
+    expect(result.action).toBe('deleted');
+    expect(result.adminLogSent).toBe(true);
+    expect(api.deleteMessage).toHaveBeenCalledWith('mid-admin-log');
+    expect(api.sendMessageToUser).toHaveBeenCalledTimes(2);
+    expect(api.sendMessageToUser).toHaveBeenCalledWith(
+      999,
+      expect.stringContaining('Лог модерации'),
+      { notify: false },
+    );
+
+    const logText = api.sendMessageToUser.mock.calls[0][1];
+    expect(logText).toContain('Действие: сообщение удалено');
+    expect(logText).toContain('Чат: 456');
+    expect(logText).toContain('Сообщение: mid-admin-log');
+    expect(logText).toContain('Пользователь: Мария, @maria, user_id 123');
+    expect(logText).toContain('Сработало: "пиздец"');
+    expect(logText).toContain('Правило: dictionary');
+    expect(logText).toContain(originalText);
+  });
+
+  it('includes auto-ban details in admin moderation logs', async () => {
+    const api = {
+      deleteMessage: vi.fn(),
+      sendMessageToChat: vi.fn(),
+      sendMessageToUser: vi.fn(),
+    };
+    const sanctionStore = {
+      getActiveBan: vi.fn(() => null),
+      getAutoBanSettings: vi.fn(() => ({
+        chatId: 456,
+        enabled: true,
+        threshold: 2,
+        windowMinutes: 10,
+        durationMinutes: 30,
+      })),
+      recordViolation: vi.fn(() => ({
+        changed: true,
+        chatId: 456,
+        userId: 123,
+        count: 2,
+      })),
+      setBan: vi.fn(() => ({
+        changed: true,
+        action: 'created',
+        ban: {
+          chatId: 456,
+          userId: 123,
+          expiresAt: '2026-07-13T12:30:00.000Z',
+        },
+      })),
+      clearViolations: vi.fn(),
+    };
+    const moderator = createModerator({
+      api,
+      dryRun: false,
+      notify: false,
+      sanctionStore,
+      adminUserIds: [999],
+      adminLog: { enabled: true },
+    });
+
+    const result = await moderator.handleUpdate({
+      update_type: 'message_created',
+      message: {
+        sender: { user_id: 123, name: 'Мария', is_bot: false },
+        recipient: { chat_id: 456 },
+        body: { mid: 'mid-admin-log-autoban', text: 'ну это пиздец' },
+      },
+    });
+
+    expect(result.action).toBe('deleted');
+    expect(result.autoBan).toEqual(
+      expect.objectContaining({ chatId: 456, userId: 123 }),
+    );
+
+    const logText = api.sendMessageToUser.mock.calls[0][1];
+    expect(logText).toContain('Нарушения для авто-ban: 2/2');
+    expect(logText).toContain('Auto-ban: включён на 30 минут');
+  });
 });
