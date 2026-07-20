@@ -46,6 +46,8 @@ export function createMaxApi({ token, baseUrl }) {
   return {
     request,
     getMe: () => request('GET', '/me'),
+    getChat: (chatId) =>
+      request('GET', `/chats/${encodeURIComponent(String(chatId))}`),
     getUpdates: ({ limit, timeout, marker, types } = {}) =>
       request('GET', '/updates', {
         query: {

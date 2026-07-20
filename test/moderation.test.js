@@ -1667,6 +1667,7 @@ describe('createModerator', () => {
   it('sends moderation details to bot admins when admin log is enabled', async () => {
     const api = {
       deleteMessage: vi.fn(),
+      getChat: vi.fn(() => ({ title: 'Тестовый чат' })),
       sendMessageToChat: vi.fn(),
       sendMessageToUser: vi.fn(),
     };
@@ -1696,6 +1697,7 @@ describe('createModerator', () => {
     expect(result.action).toBe('deleted');
     expect(result.adminLogSent).toBe(true);
     expect(api.deleteMessage).toHaveBeenCalledWith('mid-admin-log');
+    expect(api.getChat).toHaveBeenCalledWith(456);
     expect(api.sendMessageToUser).toHaveBeenCalledTimes(2);
     expect(api.sendMessageToUser).toHaveBeenCalledWith(
       999,
@@ -1705,8 +1707,9 @@ describe('createModerator', () => {
 
     const logText = api.sendMessageToUser.mock.calls[0][1];
     expect(logText).toContain('Действие: сообщение удалено');
-    expect(logText).toContain('Чат: 456');
-    expect(logText).toContain('Сообщение: mid-admin-log');
+    expect(logText).toContain('Чат: Тестовый чат (456)');
+    expect(logText).not.toContain('Сообщение: mid-admin-log');
+    expect(logText).not.toContain('mid-admin-log');
     expect(logText).toContain('Пользователь: Мария, @maria, user_id 123');
     expect(logText).toContain('Сработало: "пиздец"');
     expect(logText).toContain('Правило: dictionary');

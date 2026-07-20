@@ -33,6 +33,7 @@ export function createModerator({
   },
 }) {
   const adminLogSettings = normalizeAdminLog(adminLog);
+  const chatInfoCache = new Map();
 
   async function handleUpdate(update) {
     if (update?.update_type === 'message_callback') {
@@ -55,6 +56,7 @@ export function createModerator({
     const messageId = message?.body?.mid;
     const recipient = message?.recipient || {};
     const chatId = recipient.chat_id;
+    const chatTitle = getChatTitleFromMessage(message, update);
     const sender = message?.sender;
     const userId = message?.sender?.user_id;
     const userName = getUserDisplayName(sender);
@@ -130,13 +132,14 @@ export function createModerator({
           adminStore,
           action: 'soft-ban-delete',
           chatId,
-          messageId,
+          chatTitle,
           userId,
           userName,
           username,
           originalText: text,
           reason: 'soft-ban',
           ban: activeBan,
+          chatInfoCache,
         });
         return {
           action: 'soft-ban-delete',
@@ -244,13 +247,14 @@ export function createModerator({
         adminStore,
         action: 'would-delete',
         chatId,
-        messageId,
+        chatTitle,
         userId,
         userName,
         username,
         originalText: text,
         token: result.token,
         reason: result.reason,
+        chatInfoCache,
       });
 
       return {
@@ -300,7 +304,7 @@ export function createModerator({
       adminStore,
       action: 'deleted',
       chatId,
-      messageId,
+      chatTitle,
       userId,
       userName,
       username,
@@ -308,6 +312,7 @@ export function createModerator({
       token: result.token,
       reason: result.reason,
       autoBan: autoBanResult,
+      chatInfoCache,
     });
 
     return {
@@ -782,7 +787,7 @@ async function sendAdminModerationLog({
   adminStore,
   action,
   chatId,
-  messageId,
+  chatTitle,
   userId,
   userName,
   username,
@@ -791,6 +796,7 @@ async function sendAdminModerationLog({
   reason,
   autoBan,
   ban,
+  chatInfoCache,
 }) {
   if (!adminLog?.enabled) {
     return false;
@@ -801,10 +807,16 @@ async function sendAdminModerationLog({
     return false;
   }
 
+  const chatLabel = await resolveAdminLogChatLabel({
+    api,
+    chatId,
+    chatTitle,
+    chatInfoCache,
+  });
+
   const text = formatAdminModerationLog({
     action,
-    chatId,
-    messageId,
+    chatLabel,
     userId,
     userName,
     username,
@@ -836,8 +848,7 @@ async function sendAdminModerationLog({
 
 function formatAdminModerationLog({
   action,
-  chatId,
-  messageId,
+  chatLabel,
   userId,
   userName,
   username,
@@ -852,8 +863,7 @@ function formatAdminModerationLog({
     'Лог модерации',
     '',
     `Действие: ${formatAdminLogAction(action)}`,
-    `Чат: ${chatId || 'неизвестно'}`,
-    `Сообщение: ${messageId || 'неизвестно'}`,
+    `Чат: ${chatLabel || 'неизвестно'}`,
     `Пользователь: ${formatAdminLogUser({ userId, userName, username })}`,
     `Сработало: ${token ? `"${token}"` : 'без слова'}`,
     `Правило: ${reason || 'неизвестно'}`,
@@ -890,6 +900,65 @@ function formatAdminLogUser({ userId, userName, username }) {
   if (username) parts.push(username);
   if (userId) parts.push(`user_id ${userId}`);
   return parts.join(', ') || 'неизвестно';
+}
+
+async function resolveAdminLogChatLabel({ api, chatId, chatTitle, chatInfoCache }) {
+  if (!chatId) {
+    return 'неизвестно';
+  }
+
+  const cacheKey = String(chatId);
+  const cachedTitle = chatInfoCache?.get(cacheKey);
+  const title = chatTitle || cachedTitle || (await fetchChatTitle(api, chatId));
+  if (title && chatInfoCache && !cachedTitle) {
+    chatInfoCache.set(cacheKey, title);
+  }
+
+  return title ? `${title} (${chatId})` : String(chatId);
+}
+
+async function fetchChatTitle(api, chatId) {
+  if (!api?.getChat) {
+    return '';
+  }
+
+  try {
+    return getChatTitleFromChat(await api.getChat(chatId));
+  } catch (error) {
+    console.error(`Failed to resolve chat title for ${chatId}`);
+    console.error(error?.data || error);
+    return '';
+  }
+}
+
+function getChatTitleFromMessage(message = {}, update = {}) {
+  return firstTextValue(
+    message.chat?.title,
+    message.chat?.name,
+    message.recipient?.title,
+    message.recipient?.name,
+    message.recipient?.chat?.title,
+    message.recipient?.chat?.name,
+    update.chat?.title,
+    update.chat?.name,
+  );
+}
+
+function getChatTitleFromChat(chat = {}) {
+  return firstTextValue(
+    chat.title,
+    chat.name,
+    chat.chat?.title,
+    chat.chat?.name,
+  );
+}
+
+function firstTextValue(...values) {
+  return (
+    values
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .find(Boolean) || ''
+  );
 }
 
 function truncateAdminLogText(value, limit) {
